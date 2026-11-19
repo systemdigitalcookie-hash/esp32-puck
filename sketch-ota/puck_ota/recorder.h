@@ -22,7 +22,9 @@ extern RecInfo rec;
 
 bool rec_init();    // call once after I2C (Wire) is up
 void rec_start();   // no-op unless idle
-void rec_stop();    // asks recorder to stop and finalize the WAV
+void rec_stop();    // asks recorder to stop and finalize the WAV (non-blocking)
+void rec_force_idle(const char *why);   // UI watchdog escape hatch
+extern volatile bool rec_writer_alive;
 
 // ---- recordings list / playback / delete ----
 struct RecFile { char name[24]; uint32_t bytes; };

@@ -61,3 +61,9 @@ eyes (idle blink / listening look-up / thinking side-to-side / speaking squish+b
   Sound (volume + Test speaker), Microphone (gain 0-37.5 dB + live level + 3 s Mic test with playback), Display (brightness),
   Storage, Wi-Fi (info + Change network = forget & restart into Puck-Setup), Battery, About (version, build date, device id, Check update).
   Volume / gain / brightness are saved in NVS. Mock: `layout_mock_v8.png` (`tools_mock.py`, gitignored output).
+
+### v9: recorder Stop/save fix
+- Stop is non-blocking; the writer task finalizes (header, close, size check) off the UI task and shows each stage ("saving: header/close/check Ns").
+- Capture task owns and stops I2S itself and never busy-spins; writer moved to core 1 at low priority so it cannot starve capture or vice versa.
+- UI save watchdog: swipe unlocks after 10 s, after 30 s the screen returns to idle with "save timed out - restart puck"; a stuck writer blocks new
+  recordings with a clear message. Save errors are shown in red ("save failed" / "save error").

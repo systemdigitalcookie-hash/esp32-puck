@@ -47,11 +47,15 @@ static void wav_header(uint8_t *h, uint32_t data_len) {
   memcpy(h + 36, "data", 4); memcpy(h + 40, &data_len, 4);
 }
 
-static void rewrite_header(uint32_t n) {
+static bool rewrite_header(uint32_t n, bool final_ = false) {
   uint8_t h[44]; wav_header(h, n);
   size_t pos = wf.position();
-  wf.seek(0); wf.write(h, 44); wf.flush(); wf.seek(pos);
+  bool ok = wf.seek(0) && wf.write(h, 44) == 44;
+  if (!final_) { wf.flush(); wf.seek(pos); }   // the final rewrite is followed by close(), which flushes
+  return ok;
 }
+volatile bool rec_writer_alive = false;   // writer task still running (save in progress or stuck)
+static char cur_path[40];
 
 static void scan_files(int *count, int *maxidx, char *lastname) {
   *count = 0; *maxidx = 0; if (lastname) lastname[0] = 0;
@@ -102,7 +106,7 @@ static void capture_task(void *) {
   int skip = 4;  // discard first chunks (codec settling)
   while (!stop_req) {
     size_t got = i2s.readBytes((char *)st, sizeof st);
-    if (got < sizeof st) { continue; }
+    if (got < sizeof st) { vTaskDelay(1); continue; }   // never spin: would starve the writer on this core
     if (skip > 0) { skip--; continue; }
     int peak = 0;
     for (int i = 0; i < CHUNK_FRAMES; i++) {
@@ -117,6 +121,7 @@ static void capture_task(void *) {
     memcpy(ring + off, mono, first); if (n > first) memcpy(ring, (uint8_t *)mono + first, n - first);
     head += n;
   }
+  i2s.end();          // the capture task owns I2S: stop it here, never from another task
   rec.level = 0;
   cap_done = true;
   vTaskDelete(NULL);
@@ -125,6 +130,8 @@ static void capture_task(void *) {
 static void writer_task(void *) {
   static uint8_t blk[16384];
   uint32_t last_hdr = 0;
+  bool werr = false;
+  rec_writer_alive = true;
   for (;;) {
     uint32_t avail = head - tail;
     bool finishing = cap_done;
@@ -132,7 +139,7 @@ static void writer_task(void *) {
       uint32_t n = min<uint32_t>(avail, sizeof blk);
       uint32_t off = tail % RING_SZ, first = min<uint32_t>(n, RING_SZ - off);
       memcpy(blk, ring + off, first); if (n > first) memcpy(blk + first, ring, n - first);
-      if (wf.write(blk, n) != n) { put_msg("write error"); stop_req = true; }
+      if (wf.write(blk, n) != n) { put_msg("write error"); werr = true; stop_req = true; }
       tail += n; data_bytes += n;
       rec.secs = data_bytes / BYTES_PER_SEC;
       if (data_bytes + 65536 > start_free_bytes && !stop_req) { put_msg("storage full"); stop_req = true; }
@@ -143,14 +150,22 @@ static void writer_task(void *) {
       break;
     } else vTaskDelay(pdMS_TO_TICKS(10));
   }
-  rewrite_header(data_bytes);
+  // finalize (runs here, never on the UI task); each stage is shown on screen so a stall can be located
+  put_msg("saving: header");
+  if (!rewrite_header(data_bytes, true)) werr = true;
+  put_msg("saving: close");
   wf.close();
-  i2s.end();
+  put_msg("saving: check");
+  File chk = store->open(cur_path, FILE_READ);
+  uint32_t sz = chk ? chk.size() : 0; if (chk) chk.close();
+  if (sz < data_bytes + 44) werr = true;
   int c, m; scan_files(&c, &m, rec.last);
   rec.count = c;
-  if (!strcmp(rec.msg, "recording")) put_msg("saved");
+  if (werr) put_msg(sz ? "save error (file may be short)" : "save failed");
+  else put_msg("saved");
   rec.free_secs = free_bytes() / BYTES_PER_SEC;
   rec.state = REC_IDLE;
+  rec_writer_alive = false;
   vTaskDelete(NULL);
 }
 
@@ -232,10 +247,12 @@ bool rec_init() {
 
 void rec_start() {
   if (rec.state != REC_IDLE || !ring) return;
+  if (rec_writer_alive) { put_msg("previous save stuck - restart puck"); return; }
   if (rec_playing) { put_msg("stop playback first"); return; }
   if (!mount_storage()) return;
   int c, maxidx; scan_files(&c, &maxidx, nullptr);
   char path[40]; snprintf(path, sizeof path, "/rec/rec_%04d.wav", maxidx + 1);
+  strcpy(cur_path, path);
   start_free_bytes = free_bytes();
   if (start_free_bytes < 200000) { put_msg("storage full"); return; }
   wf = store->open(path, FILE_WRITE);
@@ -250,14 +267,23 @@ void rec_start() {
   stop_req = false; cap_done = false;
   put_msg("recording");
   rec.state = REC_RECORDING;
-  xTaskCreatePinnedToCore(writer_task, "wr", 6144, NULL, 3, NULL, 0);
+  // capture on core 0 (high prio, short bursts); writer on core 1 at low prio so slow flash/SD writes never starve capture
+  xTaskCreatePinnedToCore(writer_task, "wr", 8192, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(capture_task, "cap", 6144, NULL, 5, NULL, 0);
 }
 
-void rec_stop() {
+void rec_stop() {   // non-blocking: the writer task finalizes and sets REC_IDLE
   if (rec.state != REC_RECORDING) return;
+  put_msg("saving...");
   rec.state = REC_FINALIZING;
   stop_req = true;
+}
+
+void rec_force_idle(const char *why) {   // UI watchdog: give the screen back even if the writer is stuck
+  if (rec.state == REC_IDLE) return;
+  stop_req = true;
+  put_msg(why);
+  rec.state = REC_IDLE;
 }
 
 // ---------------- recordings list / delete ----------------

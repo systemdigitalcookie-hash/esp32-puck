@@ -341,10 +341,22 @@ void loop() {
     lv_bar_set_value(bar, rec.state == REC_RECORDING ? rec.level : 0, LV_ANIM_OFF);
     char fr[16], st[96];
     fmt_dur(fr, sizeof fr, rec.free_secs);
-    // minimal: only show problems, else free time
-    bool problem = strcmp(rec.msg, "ready") && strcmp(rec.msg, "recording") && strcmp(rec.msg, "saved") &&
+    // minimal: only show problems / saving progress, else free time
+    static uint32_t fin_since = 0; static bool fin_warned = false;
+    bool saving = rec.state == REC_FINALIZING || rec_writer_alive && rec.state == REC_IDLE;
+    bool problem = !saving && strcmp(rec.msg, "ready") && strcmp(rec.msg, "recording") && strcmp(rec.msg, "saved") &&
                    strcmp(rec.msg, "playing") && strcmp(rec.msg, "deleted") && rec.msg[0];
-    if (problem) snprintf(st, sizeof st, "%s", rec.msg); else snprintf(st, sizeof st, "%s left", fr);
+    if (rec.state == REC_FINALIZING) {   // save watchdog: never leave the screen stuck on "Saving"
+      if (!fin_since) { fin_since = now; fin_warned = false; }
+      uint32_t el = now - fin_since;
+      if (el > 10000 && !fin_warned) { fin_warned = true; lv_obj_add_flag(tv, LV_OBJ_FLAG_SCROLLABLE); }   // unlock swipe
+      if (el > 30000) { rec_force_idle("save timed out - restart puck"); problem = true; saving = false; }
+      snprintf(st, sizeof st, "%s %lus", rec.msg, (unsigned long)(el / 1000));
+    } else {
+      fin_since = 0;
+      if (problem) snprintf(st, sizeof st, "%s", rec.msg); else if (saving) snprintf(st, sizeof st, "%s", rec.msg);
+      else snprintf(st, sizeof st, "%s left", fr);
+    }
     if (strcmp(shown_stat, st)) {
       strcpy(shown_stat, st); lv_label_set_text(lbl_stat, shown_stat);
       lv_obj_set_style_text_color(lbl_stat, lv_color_hex(problem ? C_RED : C_GREY), 0);
