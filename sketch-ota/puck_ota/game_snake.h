@@ -51,26 +51,41 @@ static void snake_load() {
 }
 static void snake_save(const char *k, int v) { Preferences p; if (p.begin("games", false)) { p.putInt(k, v); p.end(); } }
 
-static void snake_cell(int cx, int cy, uint32_t col, int r) {
-  lv_draw_rect_dsc_t d; lv_draw_rect_dsc_init(&d);
-  d.bg_color = lv_color_hex(col); d.radius = r; d.border_width = 0;
-  lv_canvas_draw_rect(snake_cv, cx * SNAKE_C + 1, cy * SNAKE_C + 1, SNAKE_C - 1, SNAKE_C - 1, &d);
+// v14: cells are written straight into the canvas buffer; only the touched cells are invalidated
+#define SNAKE_W (SNAKE_N * SNAKE_C)
+static void snake_fillpx(int x, int y, int w, int h, lv_color_t c) {
+  for (int j = 0; j < h; j++) { lv_color_t *p = snake_buf + (y + j) * SNAKE_W + x; for (int i = 0; i < w; i++) p[i] = c; }
 }
-static void snake_draw() {
-  if (!snake_cv) return;
-  lv_canvas_fill_bg(snake_cv, lv_color_hex(0x2b6c3a), LV_OPA_COVER);
-  lv_draw_rect_dsc_t d; lv_draw_rect_dsc_init(&d); d.bg_color = lv_color_hex(0x266234); d.border_width = 0;
-  for (int y = 0; y < SNAKE_N; y++) for (int x = (y & 1); x < SNAKE_N; x += 2)
-    lv_canvas_draw_rect(snake_cv, x * SNAKE_C, y * SNAKE_C, SNAKE_C, SNAKE_C, &d);
-  snake_cell(snake_fx, snake_fy, 0xE03E3E, 5);
-  for (int i = snake_len - 1; i >= 0; i--) snake_cell(snake_x[i], snake_y[i], i == 0 ? 0xFFFFFF : (i & 1 ? 0xF2F2EA : 0xC8D8B0), i == 0 ? 3 : 1);
-  // eyes
-  lv_draw_rect_dsc_t e; lv_draw_rect_dsc_init(&e); e.bg_color = lv_color_hex(0); e.border_width = 0;
-  int hx = snake_x[0] * SNAKE_C, hy = snake_y[0] * SNAKE_C;
+static void snake_inval(int cx, int cy) {
+  lv_area_t a; lv_obj_get_coords(snake_cv, &a);
+  a.x1 += cx * SNAKE_C; a.y1 += cy * SNAKE_C; a.x2 = a.x1 + SNAKE_C - 1; a.y2 = a.y1 + SNAKE_C - 1;
+  lv_obj_invalidate_area(snake_cv, &a);
+}
+static lv_color_t snake_bgc(int x, int y) { return lv_color_hex(((x + y) & 1) ? 0x2b6c3a : 0x266234); }
+static void snake_bg(int cx, int cy) { snake_fillpx(cx * SNAKE_C, cy * SNAKE_C, SNAKE_C, SNAKE_C, snake_bgc(cx, cy)); snake_inval(cx, cy); }
+static void snake_cell(int cx, int cy, uint32_t col, int r) {   // r>0: trim the 4 corner pixels
+  snake_fillpx(cx * SNAKE_C, cy * SNAKE_C, SNAKE_C, SNAKE_C, snake_bgc(cx, cy));
+  snake_fillpx(cx * SNAKE_C + 1, cy * SNAKE_C + 1, SNAKE_C - 1, SNAKE_C - 1, lv_color_hex(col));
+  if (r > 0) { lv_color_t b = snake_bgc(cx, cy); int x0 = cx * SNAKE_C + 1, y0 = cy * SNAKE_C + 1, e = SNAKE_C - 2;
+    snake_buf[y0 * SNAKE_W + x0] = b; snake_buf[y0 * SNAKE_W + x0 + e] = b; snake_buf[(y0 + e) * SNAKE_W + x0] = b; snake_buf[(y0 + e) * SNAKE_W + x0 + e] = b; }
+  snake_inval(cx, cy);
+}
+static void snake_head() {
+  int cx = snake_x[0], cy = snake_y[0];
+  snake_cell(cx, cy, 0xFFFFFF, 1);
+  int hx = cx * SNAKE_C, hy = cy * SNAKE_C; lv_color_t k = lv_color_hex(0);
   int ex = snake_dx > 0 ? 8 : (snake_dx < 0 ? 2 : 0), ey = snake_dy > 0 ? 8 : (snake_dy < 0 ? 2 : 0);
-  if (snake_dx) { lv_canvas_draw_rect(snake_cv, hx + ex, hy + 3, 2, 2, &e); lv_canvas_draw_rect(snake_cv, hx + ex, hy + 8, 2, 2, &e); }
-  else { lv_canvas_draw_rect(snake_cv, hx + 3, hy + ey, 2, 2, &e); lv_canvas_draw_rect(snake_cv, hx + 8, hy + ey, 2, 2, &e); }
+  if (snake_dx) { snake_fillpx(hx + ex, hy + 3, 2, 2, k); snake_fillpx(hx + ex, hy + 8, 2, 2, k); }
+  else { snake_fillpx(hx + 3, hy + ey, 2, 2, k); snake_fillpx(hx + 8, hy + ey, 2, 2, k); }
+}
+static uint32_t snake_bodyc(int x, int y) { return ((x + y) & 1) ? 0xF2F2EA : 0xC8D8B0; }
+static void snake_draw() {   // full redraw: only on start
+  if (!snake_cv || !snake_buf) return;
+  for (int y = 0; y < SNAKE_N; y++) for (int x = 0; x < SNAKE_N; x++) snake_fillpx(x * SNAKE_C, y * SNAKE_C, SNAKE_C, SNAKE_C, snake_bgc(x, y));
   lv_obj_invalidate(snake_cv);
+  snake_cell(snake_fx, snake_fy, 0xE03E3E, 1);
+  for (int i = snake_len - 1; i > 0; i--) snake_cell(snake_x[i], snake_y[i], snake_bodyc(snake_x[i], snake_y[i]), 0);
+  snake_head();
 }
 static void snake_place_food() {
   for (int tries = 0; tries < 2000; tries++) {
@@ -116,6 +131,7 @@ static void snake_step() {
   int nx = snake_x[0] + snake_dx, ny = snake_y[0] + snake_dy;
   if (nx < 0 || ny < 0 || nx >= SNAKE_N || ny >= SNAKE_N) { snake_end(); return; }
   bool eat = (nx == snake_fx && ny == snake_fy);
+  int otx = snake_x[snake_len - 1], oty = snake_y[snake_len - 1], ohx = snake_x[0], ohy = snake_y[0];
   int chk = eat ? snake_len : snake_len - 1;   // tail cell frees up when not growing
   for (int i = 0; i < chk; i++) if (snake_x[i] == nx && snake_y[i] == ny) { snake_end(); return; }
   if (eat && snake_len < SNAKE_N * SNAKE_N) snake_len++;
@@ -124,9 +140,10 @@ static void snake_step() {
   if (eat) {
     snake_score++; char b[12]; snprintf(b, sizeof b, "%d", snake_score); lv_label_set_text(snake_score_l, b);
     if (snake_len >= SNAKE_N * SNAKE_N) { snake_end(); return; }
-    snake_place_food();
-  }
-  snake_draw();
+    snake_place_food(); snake_cell(snake_fx, snake_fy, 0xE03E3E, 1);
+  } else snake_bg(otx, oty);
+  snake_cell(ohx, ohy, snake_bodyc(ohx, ohy), 0);
+  snake_head();
 }
 static void snake_tick(lv_timer_t *) {
   if (snake_state != SNAKE_PLAY) return;
@@ -154,21 +171,14 @@ static void snake_touch_cb(lv_event_t *e) {
       if (abs(dx) > abs(dy)) snake_turn(dx > 0 ? 1 : -1, 0); else snake_turn(0, dy > 0 ? 1 : -1);
       snake_pt0 = p; snake_moved = true;
     }
-  } else if (c == LV_EVENT_RELEASED) {
-    int dx = p.x - snake_pt0.x, dy = p.y - snake_pt0.y;
-    if (!snake_moved && abs(dx) < 12 && abs(dy) < 12) {   // tap = pause / resume
-      if (snake_state == SNAKE_PLAY) snake_show(SNAKE_PAUSE);
-      else { snake_last = lv_tick_get(); snake_show(SNAKE_PLAY); }
-    }
-  }
+  }   // v14: no tap-to-pause
 }
 static void snake_btn_cb(lv_event_t *e) {
   int id = (int)(intptr_t)lv_event_get_user_data(e);
   if (id == 0) snake_start();
   else if (id == 1) { void (*cb)(void) = snake_exit_cb; if (cb) cb(); }
   else if (id == 2) {
-    if (snake_state == SNAKE_PLAY) snake_show(SNAKE_PAUSE);
-    else if (snake_state == SNAKE_PAUSE) { snake_last = lv_tick_get(); snake_show(SNAKE_PLAY); }
+    // (pause removed)
   } else if (id == 3) {
     snake_ctl ^= 1; snake_save("snake_ctl", snake_ctl);
     lv_label_set_text(snake_ctl_l, snake_ctl ? "Control: Tilt" : "Control: Swipe");

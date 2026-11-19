@@ -177,7 +177,7 @@ static void sub_refresh() {   // 1 Hz live values
   char b[64];
   if (sub_kind == SET_STORAGE) {
     char f[16], t[16]; fmt_gb(f, sizeof f, rec_free_bytes()); fmt_gb(t, sizeof t, rec_total_bytes());
-    lv_label_set_text(sub_val[0], !strcmp(rec.storage, "SD") ? "SD card" : "Internal flash");
+    lv_label_set_text(sub_val[0], rec.sd[0] ? rec.sd : (!strcmp(rec.storage, "SD") ? "SD card" : "Internal flash"));
     snprintf(b, sizeof b, "%s of %s", f, t); lv_label_set_text(sub_val[1], b);
     fmt_dur(f, sizeof f, rec.free_secs); lv_label_set_text(sub_val[2], f);
     snprintf(b, sizeof b, "%d", rec.count); lv_label_set_text(sub_val[3], b);
