@@ -6,3 +6,6 @@ build-ota/
 dist/
 *.elf
 *.map
+melody_img.h
+melody_src.jpg
+melody_preview.png
