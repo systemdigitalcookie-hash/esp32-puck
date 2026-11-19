@@ -10,6 +10,7 @@ static uint32_t ru_t0 = 0, ru_tap = 0, ru_hs_t = 0;
 static int ru_hs_f = 0;
 static char ru_err[80];
 static uint32_t ru_saved_secs = 0;
+static bool ru_sd_fb = false;   // v17: last save fell back from SD to internal flash
 static lv_obj_t *rp_ready, *rp_rec, *rp_saving, *rp_saved, *rp_err;
 static lv_obj_t *r_list, *r_dot, *r_state, *r_timer, *r_bar, *r_pause_btn, *r_pause_lbl, *r_stop_btn, *r_hs = NULL;
 static lv_obj_t *r_stage, *r_saved_lbl, *r_err_lbl;
@@ -52,7 +53,8 @@ static void ru_set(int s) {
   if (s == RU_SAVED) {
     char d[16], b[64]; fmt_mmss(d, sizeof d, ru_saved_secs);
     if (d[0] == '0' && d[2] != ':') memmove(d, d + 1, strlen(d));   // 00:42 -> 0:42
-    snprintf(b, sizeof b, "Saved %s to %s", d, !strcmp(rec.storage, "SD") ? "SD" : "flash");
+    if (ru_sd_fb) snprintf(b, sizeof b, "Saved %s to internal (SD error)", d);
+    else snprintf(b, sizeof b, "Saved %s to %s", d, !strcmp(rec.storage, "SD") ? "SD" : "flash");
     lv_label_set_text(r_saved_lbl, b);
   }
   if (s == RU_ERROR) lv_label_set_text(r_err_lbl, ru_err);
@@ -287,7 +289,8 @@ static void ru_tick(uint32_t now) {
   else if (st == REC_PAUSED && ru != RU_PAUSED) ru_set(RU_PAUSED);
   else if (st == REC_FINALIZING && ru != RU_SAVING) { ru_saved_secs = rec.secs; ru_set(RU_SAVING); }
   else if (st == REC_IDLE && (ru == RU_REC || ru == RU_PAUSED || ru == RU_SAVING)) {
-    if (!strcmp(rec.msg, "saved")) { ru_saved_secs = rec.secs; ru_set(RU_SAVED); }
+    ru_sd_fb = !strncmp(rec.msg, "Saved", 5);   // v17: "Saved to internal (SD error)" is still a successful save
+    if (!strcmp(rec.msg, "saved") || ru_sd_fb) { ru_saved_secs = rec.secs; ru_set(RU_SAVED); }
     else ru_error(rec.msg);
   }
   uint32_t el = now - ru_t0;
