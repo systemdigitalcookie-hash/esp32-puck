@@ -8,7 +8,7 @@ enum { RU_READY = 0, RU_REC, RU_PAUSED, RU_SAVING, RU_SAVED, RU_ERROR };
 static int ru = -1;
 static uint32_t ru_t0 = 0, ru_tap = 0, ru_hs_t = 0;
 static int ru_hs_f = 0;
-static char ru_err[64];
+static char ru_err[80];
 static uint32_t ru_saved_secs = 0;
 static lv_obj_t *rp_ready, *rp_rec, *rp_saving, *rp_saved, *rp_err;
 static lv_obj_t *r_list, *r_dot, *r_state, *r_timer, *r_bar, *r_pause_btn, *r_pause_lbl, *r_stop_btn, *r_hs = NULL;

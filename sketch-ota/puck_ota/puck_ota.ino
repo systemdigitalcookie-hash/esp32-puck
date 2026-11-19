@@ -7,6 +7,7 @@
 #include <WiFiManager.h>
 #include <WiFiClientSecure.h>
 #include <HTTPUpdate.h>
+#include "wifi_net.h"
 #include "recorder.h"
 #if __has_include("headset_img.h")
 #include "headset_img.h"   // personal asset (gitignored): animated headset character, LVGL indexed 2-bit frames
@@ -45,14 +46,11 @@ static void nav_apply() {
 static void btn_cb(lv_event_t *e) { want_check = true; }
 
 static void net_task(void *) {
-  WiFiManager wm;                       // saved creds reused; else AP "Puck-Setup" portal
-  wm.setConfigPortalTimeout(180);
-  snprintf(status_txt, sizeof status_txt, "WiFi: join AP Puck-Setup");
-  if (!wm.autoConnect("Puck-Setup")) { snprintf(status_txt, sizeof status_txt, "WiFi failed"); vTaskDelete(NULL); }
-  configTime(0, 0, "pool.ntp.org", "time.google.com");   // cert validation needs correct time
-  for (int i = 0; i < 40 && time(nullptr) < 1700000000; i++) delay(250);
-  snprintf(status_txt, sizeof status_txt, "%s", WiFi.localIP().toString().c_str());
+  // v11: saved networks (strongest known first) -> WiFiManager portal "Puck-Setup" only as the fallback
+  bool online = wn_boot("Puck-Setup", status_txt, sizeof status_txt);
+  if (online) { wn_time_once(); snprintf(status_txt, sizeof status_txt, "%s", WiFi.localIP().toString().c_str()); }
   for (;;) {
+    if (wn_service()) snprintf(status_txt, sizeof status_txt, "%s", WiFi.localIP().toString().c_str());
     if (want_check) {
       want_check = false;
       if (rec.state != REC_IDLE || tk_state != TK_IDLE) { snprintf(status_txt, sizeof status_txt, "stop recording / Tauke first"); continue; }

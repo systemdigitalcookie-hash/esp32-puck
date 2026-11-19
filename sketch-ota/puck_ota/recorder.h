@@ -12,7 +12,7 @@ struct RecInfo {
   volatile uint32_t dropped;   // bytes dropped because storage was too slow (should stay 0)
   char storage[8];             // "SD" or "Flash"
   char last[24];               // last saved file name
-  char msg[40];                // short status/error message
+  char msg[72];                // short status/error message
   char mic[64];                // mic diagnostics (init + self-test result)
   char sd[32];                 // SD diagnostics
   char i2c[72];                // I2C scan result (7-bit hex addresses)

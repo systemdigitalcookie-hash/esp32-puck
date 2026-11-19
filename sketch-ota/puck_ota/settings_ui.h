@@ -2,6 +2,7 @@
 // Included from puck_ota.ino after the helpers it uses (bq_word, fmt_dur, want_check, status_txt, tv, dots).
 #pragma once
 #include <Preferences.h>
+#include "wifi_ui.h"
 
 static int g_bright = 70;
 
@@ -96,6 +97,7 @@ static void sub_close() {
   if (mt_state == 1) talk_cap_stop();
   if (mt_state == 2 || talk_playing) talk_play_stop();
   mt_state = 0;
+  if (sub_kind == SET_WIFI) wf_close();
   lv_obj_del_async(sub); sub = NULL; sub_kind = -1; ota_lbl = NULL; sub_slider = sub_bar = sub_hint = sub_lbl = NULL;
   for (int i = 0; i < NPAGES; i++) lv_obj_clear_flag(dots[i], LV_OBJ_FLAG_HIDDEN);
 }
@@ -170,18 +172,6 @@ static void mic_test_cb(lv_event_t *e) {
   if (!talk_cap_start(mt_buf, MT_SAMPLES)) { lv_label_set_text(sub_hint, "Mic start failed"); return; }
   mt_state = 1; mt_t0 = millis(); lv_label_set_text(sub_hint, "Speak now (3 s)...");
 }
-static void wifi_forget_cb(lv_event_t *e) {
-  lv_obj_t *m = lv_event_get_current_target(e);
-  if (lv_msgbox_get_active_btn(m) == 0) { WiFi.disconnect(true, true); delay(300); ESP.restart(); }
-  lv_msgbox_close_async(m);
-}
-static void wifi_change_cb(lv_event_t *e) {
-  static const char *btns[] = {"Forget", "Cancel", ""};
-  lv_obj_t *m = lv_msgbox_create(NULL, "Change network?", "Forgets this Wi-Fi and restarts. Then join Puck-Setup from your phone.", btns, false);
-  ui_style_msgbox(m); lv_obj_set_width(m, 230); lv_obj_center(m);
-  lv_obj_add_event_cb(m, wifi_forget_cb, LV_EVENT_VALUE_CHANGED, NULL);
-}
-
 static void sub_refresh() {   // 1 Hz live values
   if (!sub) return;
   char b[64];
@@ -192,11 +182,7 @@ static void sub_refresh() {   // 1 Hz live values
     fmt_dur(f, sizeof f, rec.free_secs); lv_label_set_text(sub_val[2], f);
     snprintf(b, sizeof b, "%d", rec.count); lv_label_set_text(sub_val[3], b);
   } else if (sub_kind == SET_WIFI) {
-    bool on = WiFi.status() == WL_CONNECTED;
-    lv_label_set_text(sub_val[0], on ? WiFi.SSID().c_str() : "Not connected");
-    lv_label_set_text(sub_val[1], on ? WiFi.localIP().toString().c_str() : "-");
-    if (on) { int r = WiFi.RSSI(); snprintf(b, sizeof b, "%s (%d dBm)", r > -60 ? "Strong" : (r > -72 ? "Good" : "Weak"), r); } else strcpy(b, "-");
-    lv_label_set_text(sub_val[2], b);
+    wf_status();
   } else if (sub_kind == SET_BATTERY) {
     int soc, mv, ma; bool pr; bat_info(&soc, &mv, &ma, &pr);
     if (pr) {
@@ -211,6 +197,7 @@ static void sub_refresh() {   // 1 Hz live values
 // ~30 Hz while a sub-screen is open: mic test state machine + live meter
 static void sub_tick() {
   if (!sub) return;
+  if (sub_kind == SET_WIFI) wf_tick();
   if (sub_bar) lv_bar_set_value(sub_bar, talk_level, LV_ANIM_OFF);
   if (sub_kind == SET_MIC) {
     if (mt_state == 1 && (talk_cap_n >= MT_SAMPLES || millis() - mt_t0 > 3200)) {
@@ -276,8 +263,7 @@ static void sub_open(int kind) {
       kv_row(0, "Using"); kv_row(1, "Free"); kv_row(2, "Rec. time"); kv_row(3, "Recordings");
       break;
     case SET_WIFI:
-      kv_row(0, "Network"); kv_row(1, "IP"); kv_row(2, "Signal");
-      { lv_obj_t *t = ui_btn(sub, 160, 36, "Change network", NULL); lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 196); lv_obj_add_event_cb(t, wifi_change_cb, LV_EVENT_CLICKED, NULL); }
+      wf_build(sub);
       break;
     case SET_BATTERY:
       kv_row(0, "Level"); kv_row(1, "Voltage"); kv_row(2, "Current"); kv_row(3, "State");

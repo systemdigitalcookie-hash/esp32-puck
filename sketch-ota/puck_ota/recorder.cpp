@@ -9,6 +9,8 @@
 #include "FFat.h"
 #include "Wire.h"
 #include "esp_heap_caps.h"
+#include <errno.h>
+#include <stdarg.h>
 
 #define PIN_MCK GPIO_NUM_2
 #define PIN_BCK GPIO_NUM_48
@@ -57,15 +59,27 @@ static void wav_header(uint8_t *h, uint32_t data_len) {
   memcpy(h + 36, "data", 4); memcpy(h + 40, &data_len, 4);
 }
 
-static bool rewrite_header(uint32_t n, bool final_ = false) {
-  uint8_t h[44]; wav_header(h, n);
-  size_t pos = wf.position();
-  bool ok = wf.seek(0) && wf.write(h, 44) == 44;
-  if (!final_) { wf.flush(); wf.seek(pos); }   // the final rewrite is followed by close(), which flushes
-  return ok;
-}
 volatile bool rec_writer_alive = false;   // writer task still running (save in progress or stuck)
 static char cur_path[40];
+static fs::FS *wstore = nullptr;          // storage the current file lives on (fixed for the whole recording)
+static char fail_step[64];                // first failing save step, with errno / byte counts (shown on screen)
+static void fail(const char *fmt, ...) {
+  if (fail_step[0]) return;
+  va_list ap; va_start(ap, fmt); vsnprintf(fail_step, sizeof fail_step, fmt, ap); va_end(ap);
+  Serial.printf("[rec] FAIL %s\n", fail_step);
+}
+// Header rewrite. v11: seek back to the END (not a remembered position) and report failures: an unchecked failed
+// seek-back would have written audio over the start of the file.
+static bool rewrite_header(uint32_t n, bool final_ = false) {
+  uint8_t h[44]; wav_header(h, n);
+  errno = 0;
+  if (!wf.seek(0)) { if (final_) fail("header seek, errno %d", errno); return false; }
+  if (wf.write(h, 44) != 44) { if (final_) fail("header write, errno %d", errno); return false; }
+  if (final_) return true;                 // followed by close(), which flushes
+  wf.flush();
+  if (!wf.seek(0, SeekEnd)) { fail("seek to end, errno %d", errno); return false; }
+  return true;
+}
 
 static void scan_files(int *count, int *maxidx, char *lastname) {
   *count = 0; *maxidx = 0; if (lastname) lastname[0] = 0;
@@ -146,7 +160,7 @@ static void capture_task(void *) {
 static void writer_task(void *) {
   static uint8_t blk[16384];
   uint32_t last_hdr = 0;
-  bool werr = false;
+  bool werr = false, hdr_live = true;
   rec_writer_alive = true;
   for (;;) {
     uint32_t avail = head - tail;
@@ -155,11 +169,16 @@ static void writer_task(void *) {
       uint32_t n = min<uint32_t>(avail, sizeof blk);
       uint32_t off = tail % RING_SZ, first = min<uint32_t>(n, RING_SZ - off);
       memcpy(blk, ring + off, first); if (n > first) memcpy(blk + first, ring, n - first);
-      if (wf.write(blk, n) != n) { put_msg("write error"); werr = true; stop_req = true; }
-      tail += n; data_bytes += n;
+      errno = 0;
+      size_t w = wf.write(blk, n);
+      if (w != n) { fail("write %u/%u B at %lus, errno %d", (unsigned)w, (unsigned)n, (unsigned long)(data_bytes / BYTES_PER_SEC), errno); werr = true; stop_req = true; }
+      tail += n; data_bytes += w;               // v11: count what was really written (was: what was asked)
       rec.secs = data_bytes / BYTES_PER_SEC;
       if (data_bytes + 65536 > start_free_bytes && !stop_req) { put_msg("storage full"); stop_req = true; }
-      if (rec.secs >= last_hdr + 15) { last_hdr = rec.secs; rewrite_header(data_bytes); }
+      if (hdr_live && !werr && rec.secs >= last_hdr + 15) {   // crash safety: keep the header roughly current
+        last_hdr = rec.secs;
+        if (!rewrite_header(data_bytes)) { hdr_live = false; Serial.printf("[rec] live header rewrite failed, errno %d\n", errno); if (fail_step[0]) { werr = true; stop_req = true; } }
+      }
       uint32_t used_secs = data_bytes / BYTES_PER_SEC, total = start_free_bytes / BYTES_PER_SEC;
       rec.free_secs = total > used_secs ? total - used_secs : 0;
     } else if (finishing) {
@@ -168,17 +187,41 @@ static void writer_task(void *) {
   }
   // finalize (runs here, never on the UI task); each stage is shown on screen so a stall can be located
   put_msg("saving: header");
-  if (!rewrite_header(data_bytes, true)) werr = true;
+  bool hdr_ok = rewrite_header(data_bytes, true);
   put_msg("saving: close");
   wf.close();
   put_msg("saving: check");
-  File chk = store->open(cur_path, FILE_READ);
-  uint32_t sz = chk ? chk.size() : 0; if (chk) chk.close();
-  if (sz < data_bytes + 44) werr = true;
+  uint32_t expect = data_bytes + 44, sz = 0; bool riff = false;
+  errno = 0;
+  File chk = wstore->open(cur_path, FILE_READ);
+  if (!chk) fail("check: reopen %s, errno %d", cur_path + 5, errno);
+  else {
+    sz = chk.size(); uint8_t h[12] = {0};
+    riff = chk.read(h, 12) == 12 && !memcmp(h, "RIFF", 4) && !memcmp(h + 8, "WAVE", 4);
+    chk.close();
+  }
+  Serial.printf("[rec] save %s: expected %lu B, file %lu B, header %s, riff %d, werr %d\n", cur_path,
+                (unsigned long)expect, (unsigned long)sz, hdr_ok ? "ok" : "FAILED", riff, werr);
+  bool kept = chk && sz > 44;
+  // the file is the truth: if it holds audio but the header disagrees (or never got written), repair the header in place
+  if (kept && (!hdr_ok || !riff || sz != expect)) {
+    uint32_t dl = (sz - 44) & ~1u;
+    File fx = wstore->open(cur_path, "r+");
+    uint8_t h[44]; wav_header(h, dl);
+    bool fixed = fx && fx.seek(0) && fx.write(h, 44) == 44;
+    if (fx) fx.close();
+    Serial.printf("[rec] header repaired to %lu B data: %s\n", (unsigned long)dl, fixed ? "ok" : "FAILED");
+    if (!fixed) fail("header repair (expected %lu B, file %lu B)", (unsigned long)expect, (unsigned long)sz);
+    else if (!werr) fail_step[0] = 0;   // size/header mismatch only: file is valid now, not a failure
+  }
+  if (chk && sz <= 44 && data_bytes > 0) fail("check: file %lu B, expected %lu B", (unsigned long)sz, (unsigned long)expect);
   int c, m; scan_files(&c, &m, rec.last);
   rec.count = c;
-  if (werr) put_msg(sz ? "save error (file may be short)" : "save failed");
-  else put_msg("saved");
+  if (!fail_step[0]) put_msg("saved");
+  else {
+    char b[sizeof rec.msg]; snprintf(b, sizeof b, "Save failed: %s%s", fail_step, kept ? " (partial file kept)" : "");
+    put_msg(b);
+  }
   rec.free_secs = free_bytes() / BYTES_PER_SEC;
   rec.state = REC_IDLE;
   rec_writer_alive = false;
@@ -268,13 +311,16 @@ void rec_start() {
   if (rec_playing) { put_msg("stop playback first"); return; }
   if (!mount_storage()) return;
   int c, maxidx; scan_files(&c, &maxidx, nullptr);
-  char path[40]; snprintf(path, sizeof path, "/rec/rec_%04d.wav", maxidx + 1);
-  strcpy(cur_path, path);
+  char path[40]; int idx = maxidx + 1;
+  do snprintf(path, sizeof path, "/rec/rec_%04d.wav", idx++); while (store->exists(path) && idx < 10000);   // never overwrite
+  strcpy(cur_path, path); wstore = store; fail_step[0] = 0;
   start_free_bytes = free_bytes();
   if (start_free_bytes < 200000) { put_msg("storage full"); return; }
   wf = store->open(path, FILE_WRITE);
-  if (!wf) { put_msg("cannot create file"); return; }
-  uint8_t h[44]; wav_header(h, 0); wf.write(h, 44);
+  errno = 0;
+  if (!wf) { char b[sizeof rec.msg]; snprintf(b, sizeof b, "Can't create %s (errno %d)", path + 5, errno); put_msg(b); return; }
+  uint8_t h[44]; wav_header(h, 0);
+  if (wf.write(h, 44) != 44) { char b[sizeof rec.msg]; snprintf(b, sizeof b, "Can't write %s (errno %d)", path + 5, errno); put_msg(b); wf.close(); store->remove(path); return; }
   data_bytes = 0; head = tail = 0; rec.dropped = 0; rec.secs = 0; rec.level = 0;
   char err[48];
   if (!mic_open(err, sizeof err)) {

@@ -139,7 +139,7 @@ SYM = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
 def settings():
     im, d = page(); ctext(d, 28, "Settings", 20); div(d, 62)
     rows = [("Sound", "Volume 90"), ("Microphone", "Gain 42 dB"), ("Display", "Brightness 70%"), ("Storage", "SD 29.7 GB free"),
-            ("Wi-Fi", "HomeNet"), ("Battery", "85%"), ("About", "Firmware v10")]
+            ("Wi-Fi", "HomeNet"), ("Battery", "85%"), ("About", "Firmware v11")]
     for i, (t, sm) in enumerate(rows[:5]):
         y = 64 + i * 52
         d.text((55 + 14, y + 17), ICON[t], font=SYM, fill=GREY)
@@ -165,16 +165,61 @@ def mic():
 def about():
     im, d = page(); subhdr(d, "About")
     f = font(14)
-    for i, (k, v) in enumerate([("Firmware", "v10"), ("Built", "Nov 19 2026"), ("Device", "F412FA3C5B10")]):
+    for i, (k, v) in enumerate([("Firmware", "v11"), ("Built", "Nov 19 2026"), ("Device", "F412FA3C5B10")]):
         y = 76 + i * 34; kw = d.textlength(k, font=f); d.text((120 - kw / 2, y), k, font=f, fill=GREY)
         vw = d.textlength(v, font=f); d.text((298 - vw, y), v, font=f, fill=TEXT); div(d, y + 26, 236)
     btn(d, 180, 186, 150, 36, "Check update"); ctext(d, 232, "Up to date", 12, GREY); return im
+
+def bars(d, x, y, lvl):
+    for i in range(4):
+        h = 4 + i * 3; d.rectangle((x + i * 5, y + 13 - h, x + i * 5 + 2, y + 13), fill=TEXT if i < lvl else DIV)
+def lock(d, x, y):
+    d.arc((x + 1, y, x + 9, y + 9), 180, 360, fill=GREY, width=2); d.rounded_rectangle((x, y + 5, x + 10, y + 13), 2, fill=GREY)
+def wifi_list():
+    im, d = page(); subhdr(d, "Wi-Fi")
+    ctext(d, 70, "HomeNet", 16); ctext(d, 92, "192.168.1.23  |  -54 dBm", 12, GREY)
+    btn(d, 180, 112, 76, 26, "\u21bb Scan", 8, BG, TEXT, 12)
+    d.text((67, 150), "Networks", font=font(12), fill=GREY)
+    for i, (n, l, sec, tag) in enumerate([("HomeNet", 4, True, "Connected"), ("HomeNet_5G", 3, True, "Saved"), ("Cafe Free WiFi", 2, False, ""), ("TM-Unifi-4410", 1, True, "")]):
+        y = 168 + i * 40
+        bars(d, 67, y + 13, l); d.text((95, y + (5 if tag else 12)), n, font=font(14), fill=TEXT)
+        if tag: d.text((95, y + 23), tag, font=font(12), fill=GREY)
+        if sec: lock(d, 279, y + 13)
+        d.line((55, y + 39, 305, y + 39), fill=DIV)
+    return im
+def wifi_kb():
+    im, d = page(); ctext(d, 24, "TM-Unifi-4410", 16)
+    d.rounded_rectangle((63, 54, 253, 94), 8, outline=LINE); d.text((75, 64), "\u2022\u2022\u2022\u2022\u2022\u2022", font=font(16), fill=TEXT)
+    btn(d, 280, 54, 40, 40, "o")
+    d.rounded_rectangle((38, 102, 322, 252), 10, fill="#F7F6F3")
+    rows = ["1# qwertyuiop <", "ABC asdfghjkl \u21b5", "_ - zxcvbnm . , :", "x < space > \u2713"]
+    for r, row in enumerate(rows):
+        keys = row.split(" ") if r == 3 else list(row.replace(" ", ""))
+        if r == 0: keys = ["1#"] + list("qwertyuiop") + ["<"]
+        if r == 1: keys = ["ABC"] + list("asdfghjkl") + ["\u21b5"]
+        if r == 2: keys = ["_", "-"] + list("zxcvbnm") + [".", ",", ":"]
+        kw = (284 - 6 - 3 * (len(keys) - 1)) / len(keys); y = 105 + r * 36.5
+        for k, key in enumerate(keys):
+            x = 41 + k * (kw + 3); d.rounded_rectangle((x, y, x + kw, y + 33), 5, fill=BG, outline=DIV)
+            f = font(12); w = d.textlength(key, font=f); d.text((x + kw / 2 - w / 2, y + 10), key, font=f, fill=TEXT)
+    btn(d, 126, 262, 96, 36, "Cancel"); d.rounded_rectangle((186, 262, 282, 298), 8, fill=TEXT); ctext(d, 271, "Connect", 14, BG, 234)
+    return im
+def wifi_conn(ok):
+    im, d = page()
+    if ok is None:
+        d.arc((155, 104, 205, 154), 0, 360, fill=DIV, width=4); d.arc((155, 104, 205, 154), 300, 60, fill=TEXT, width=4)
+        ctext(d, 172, "Connecting to\nTM-Unifi-4410...", 14)
+    else:
+        ctext(d, 112, "\u2713" if ok else "\u26a0", 28, TEXT if ok else RED)
+        ctext(d, 172, "Connected to TM-Unifi-4410" if ok else "Wrong password.\nBack on HomeNet", 14, TEXT if ok else RED)
+        btn(d, 180, 240, 96, 36, "OK")
+    return im
 panels = [("1 Recorder: ready + recent list", rec_ready()), ("1 Recorder: recording", rec_running(False)),
           ("1 Recorder: paused (timer blinks)", rec_running(True)), ("1 Recorder: saving", rec_saving()),
           ("1 Recorder: saved (2 s)", rec_saved()), ("1 Recorder: error", rec_error()), ("1 Recording detail", rec_detail()),
           ("2 Tauke (idle)", tauke(True, "idle")), ("2 Tauke - waiting", tauke(True, "think")), ("3 Clock", clock()),
           ("4 Drive: start", game_idle()), ("4 Drive: playing", game_play()), ("4 Drive: game over", game_over()),
-          ("5 Settings", settings()), ("5 Settings > Microphone", mic()), ("5 Settings > About", about())]
+          ("5 Settings", settings()), ("5 Settings > Wi-Fi", wifi_list()), ("Wi-Fi: password", wifi_kb()), ("Wi-Fi: connecting", wifi_conn(None)), ("Wi-Fi: failed -> fallback", wifi_conn(False)), ("5 Settings > About", about())]
 cols = 4; W = 400; H = 430
 sheet = Image.new("RGB", (cols * W, ((len(panels) + cols - 1) // cols) * H), "#2b2b2b")
 mask = Image.new("L", (360, 360), 0); ImageDraw.Draw(mask).ellipse((0, 0, 359, 359), fill=255)
@@ -183,4 +228,4 @@ for i, (name, im) in enumerate(panels):
     x, y = (i % cols) * W + 20, (i // cols) * H + 20
     sheet.paste(im, (x, y), mask)
     sd.text((x, y + 372), name, font=font(16), fill="#e0e0e0")
-sheet.save("layout_mock_v10.png"); print("ok", sheet.size)
+sheet.save("layout_mock_v11.png"); print("ok", sheet.size)

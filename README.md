@@ -83,3 +83,18 @@ eyes (idle blink / listening look-up / thinking side-to-side / speaking squish+b
 - **Louder**: recorder sums both mics (was averaged, -6 dB) with a soft limiter; mic gain is now total dB (default 42 =
   PGA 33 + ES7210 digital 9, slider 0-60); speaker volume maps 1..100 -> -30..+12 dB on ES8311 reg 0x32 (default 90);
   playback auto-gain (up to x8, limiter). Serial logs `[mic] peak` / `[play]`.
+
+## v11
+- **Settings > Wi-Fi picker.** Shows the current network, IP and signal (dBm). Scans in the background on the net task
+  (screen never freezes) and lists networks strongest first with signal bars and a lock for secured ones. Tap one: a
+  password screen with an on-screen keyboard sized for the round display and a show/hide toggle (open and already saved
+  networks skip it). "Connecting..." then success, or the reason (wrong password / not found) and it rejoins the previous
+  network. Up to 5 saved networks in NVS (newest first, the 6th pushes out the oldest), with Forget. At boot the puck
+  joins the strongest saved network in range. The WiFiManager portal (AP `Puck-Setup`) only opens if none can be reached.
+  The network you set up with the old portal is imported automatically.
+- **Recorder save hardening.** Every save step reports exactly what failed (step + errno or expected vs actual bytes),
+  e.g. "Save failed: write 8192/16384 B at 83s, errno 28 (partial file kept)". If only the size/header check disagrees,
+  the header is repaired from the real file size and the recording counts as saved. Bytes are counted as written (not as
+  requested). The live header rewrite seeks back to end-of-file and is checked. New files never overwrite an existing name.
+  Serial: `[rec] save ... expected .. B, file .. B`.
+- Storage details live only in Settings > Storage.
