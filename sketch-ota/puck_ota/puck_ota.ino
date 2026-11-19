@@ -27,6 +27,8 @@
 #define OTA_REPO "systemdigitalcookie-hash/esp32-puck"
 #define OTA_BASE "https://github.com/" OTA_REPO "/releases/latest/download"
 
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);   // v15: was 8 KB; LVGL event chains + game logic run on loopTask
+
 static char status_txt[96] = "v" FW_STR " booting";
 static volatile bool want_check = false;
 static lv_obj_t *tv, *dots[5], *lbl_clock, *lbl_date, *lbl_tsrc;
@@ -224,7 +226,8 @@ void loop() {
     if (!ota_lbl) shown_net[0] = 0;
     else if (strcmp(shown_net, status_txt)) { strcpy(shown_net, status_txt); lv_label_set_text(ota_lbl, shown_net); }
     int page = (sx + 180) / 360; if (page < 0) page = 0; if (page > NPAGES - 1) page = NPAGES - 1;
-    for (int i = 0; i < NPAGES; i++) lv_obj_set_style_bg_color(dots[i], lv_color_hex(i == page ? C_TEXT : C_LINE), 0);
+    static int dots_page = -1;   // v15: restyle dots only when the page changes (was 5 invalidations every 100 ms)
+    if (page != dots_page) { dots_page = page; for (int i = 0; i < NPAGES; i++) lv_obj_set_style_bg_color(dots[i], lv_color_hex(i == page ? C_TEXT : C_LINE), 0); }
     if (page != last_page) {
       last_page = page; last_slow = 0;
       if (page == 0) list_dirty = true;

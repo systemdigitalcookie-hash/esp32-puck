@@ -45,8 +45,7 @@ void Lvgl_Touchpad_Read( lv_indev_drv_t * indev_drv, lv_indev_data_t * data )
 }
 void example_increase_lvgl_tick(void *arg)
 {
-    /* Tell LVGL how many milliseconds has elapsed */
-    lv_tick_inc(EXAMPLE_LVGL_TICK_PERIOD_MS);
+    /* v15: LV_TICK_CUSTOM=1 (millis) -> no periodic tick timer needed */
 }
 void example_increase_lvgl_Loop_tick(void *arg)
 {
@@ -80,13 +79,7 @@ void Lvgl_Init(void)
   lv_label_set_text( label, "Hello Ardino and LVGL!");
   lv_obj_align( label, LV_ALIGN_CENTER, 0, 0 );
 
-  const esp_timer_create_args_t lvgl_tick_timer_args = {
-    .callback = &example_increase_lvgl_tick,
-    .name = "lvgl_tick"
-  };
-  esp_timer_handle_t lvgl_tick_timer = NULL;
-  esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer);
-  esp_timer_start_periodic(lvgl_tick_timer, EXAMPLE_LVGL_TICK_PERIOD_MS * 1000);
+  // v15: tick comes from millis() via LV_TICK_CUSTOM; the 10 ms esp_timer was removed
 
 }
 void Lvgl_Loop(void)

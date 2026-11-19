@@ -29,28 +29,39 @@ static void sdk_mask_build(const uint8_t *g, SdkMask *m) {
   for (int i = 0; i < 81; i++) if (g[i]) sdk_mask_set(m, i, g[i] - 1, true);
 }
 // count solutions (up to limit); rnd!=0 randomises value order and stops at the first solution leaving it in g
+// v15: ITERATIVE (explicit static stack). v14's recursive version used ~112 B of stack per level x up to 81 levels
+// (~9 KB) inside an LVGL click handler on the 8 KB loopTask stack -> stack overflow crash when picking a difficulty.
 static int sdk_solve(uint8_t *g, SdkMask *m, int limit, long *nodes, bool rnd) {
-  int best = -1, bc = 10; uint16_t bcand = 0;
-  for (int i = 0; i < 81; i++) if (!g[i]) {
-    uint16_t cand = (~(m->r[i / 9] | m->c[i % 9] | m->b[sdk_box(i)])) & 0x1FF;
-    int n = __builtin_popcount(cand);
-    if (n < bc) { bc = n; best = i; bcand = cand; if (n <= 1) break; }
+  static uint8_t f_cell[81], f_ds[81][9], f_nd[81], f_k[81];
+  int sp = 0, cnt = 0; bool descend = true;
+  for (;;) {
+    if (descend) {
+      int best = -1, bc = 10; uint16_t bcand = 0;
+      for (int i = 0; i < 81; i++) if (!g[i]) {
+        uint16_t cand = (~(m->r[i / 9] | m->c[i % 9] | m->b[sdk_box(i)])) & 0x1FF;
+        int n = __builtin_popcount(cand);
+        if (n < bc) { bc = n; best = i; bcand = cand; if (n <= 1) break; }
+      }
+      descend = false;
+      if (best < 0) { cnt++; if (rnd) return cnt; }          // solved: rnd keeps the filled grid
+      else if (bc == 0) { }                                   // dead end
+      else if (++(*nodes) > 60000) cnt = limit;               // too hard to judge: treat as "not unique"
+      else {
+        int nd = 0; for (int d = 0; d < 9; d++) if (bcand & (1u << d)) f_ds[sp][nd++] = (uint8_t)d;
+        if (rnd) for (int i = nd - 1; i > 0; i--) { int j = sudoku_rnd() % (i + 1); uint8_t t = f_ds[sp][i]; f_ds[sp][i] = f_ds[sp][j]; f_ds[sp][j] = t; }
+        f_cell[sp] = (uint8_t)best; f_nd[sp] = (uint8_t)nd; f_k[sp] = 0; sp++;
+      }
+    }
+    if (cnt >= limit) {   // unwind: restore grid + masks to how the caller passed them
+      while (sp > 0) { sp--; if (f_k[sp]) { sdk_mask_set(m, f_cell[sp], f_ds[sp][f_k[sp] - 1], false); g[f_cell[sp]] = 0; } }
+      return cnt;
+    }
+    if (sp == 0) return cnt;
+    int f = sp - 1;
+    if (f_k[f]) { sdk_mask_set(m, f_cell[f], f_ds[f][f_k[f] - 1], false); g[f_cell[f]] = 0; }   // undo previous try
+    if (f_k[f] < f_nd[f]) { uint8_t d = f_ds[f][f_k[f]++]; g[f_cell[f]] = d + 1; sdk_mask_set(m, f_cell[f], d, true); descend = true; }
+    else sp--;
   }
-  if (best < 0) return 1;
-  if (bc == 0) return 0;
-  if (++(*nodes) > 60000) return limit;   // too hard to judge: treat as "not unique"
-  int ds[9], nd = 0; for (int d = 0; d < 9; d++) if (bcand & (1u << d)) ds[nd++] = d;
-  if (rnd) for (int i = nd - 1; i > 0; i--) { int j = sudoku_rnd() % (i + 1); int t = ds[i]; ds[i] = ds[j]; ds[j] = t; }
-  int cnt = 0;
-  for (int k = 0; k < nd; k++) {
-    g[best] = ds[k] + 1; sdk_mask_set(m, best, ds[k], true);
-    cnt += sdk_solve(g, m, limit - cnt, nodes, rnd);
-    sdk_mask_set(m, best, ds[k], false);
-    if (rnd && cnt) return cnt;           // keep the filled grid
-    g[best] = 0;
-    if (cnt >= limit) return cnt;
-  }
-  return cnt;
 }
 // difficulty 0 easy / 1 medium / 2 hard -> sol (full grid) and giv (puzzle, 0 = blank)
 static void sudoku_generate(int diff, uint8_t *sol, uint8_t *giv) {
@@ -59,13 +70,13 @@ static void sudoku_generate(int diff, uint8_t *sol, uint8_t *giv) {
   sdk_solve(sol, &m, 1, &nodes, true);
   memcpy(giv, sol, 81);
   int clues = diff == 0 ? 40 : (diff == 1 ? 33 : 28), have = 81;
-  int ord[81]; for (int i = 0; i < 81; i++) ord[i] = i;
+  static int ord[81]; for (int i = 0; i < 81; i++) ord[i] = i;
   for (int i = 80; i > 0; i--) { int j = sudoku_rnd() % (i + 1); int t = ord[i]; ord[i] = ord[j]; ord[j] = t; }
   uint32_t t0 = sudoku_ms();
   for (int k = 0; k < 81 && have > clues; k++) {
     if (sudoku_ms() - t0 > 1800) break;   // time cap: ship what we have (still unique)
     int i = ord[k]; uint8_t keep = giv[i]; giv[i] = 0;
-    uint8_t tmp[81]; memcpy(tmp, giv, 81); sdk_mask_build(tmp, &m); nodes = 0;
+    static uint8_t tmp[81]; memcpy(tmp, giv, 81); sdk_mask_build(tmp, &m); nodes = 0;
     if (sdk_solve(tmp, &m, 2, &nodes, false) == 1) have--; else giv[i] = keep;
   }
 }
