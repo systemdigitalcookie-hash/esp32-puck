@@ -1,1 +1,1 @@
-#define FW_VERSION 11
+#define FW_VERSION 12
