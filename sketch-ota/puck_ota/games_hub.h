@@ -4,10 +4,12 @@
 #pragma once
 #include <Preferences.h>
 #if __has_include("game_flappy.h")
+#include "game_flappy_icon.h"
 #include "game_flappy.h"
 #define HAVE_G_FLAPPY 1
 #endif
 #if __has_include("game_2048.h")
+#include "game_2048_icon.h"
 #include "game_2048.h"
 #define HAVE_G_2048 1
 #endif
@@ -61,14 +63,15 @@ static void gh_refresh() {
   }
 }
 static void gh_zoom_cb(void *o, int32_t v) { lv_obj_set_style_transform_zoom((lv_obj_t *)o, v, 0); }
-static void gh_exit_async(void *) {
+static void gh_teardown(bool force_close) {
   if (gh_cur < 0) return;
   GhGame &g = gh_games[gh_cur];
-  if (g.running()) g.close();
+  if (force_close) g.close();
   if (gh_cont) { lv_obj_del(gh_cont); gh_cont = NULL; }
   gh_cur = -1; lock_game = false; nav_apply(); gh_refresh();
   for (int i = 0; i < gh_n; i++) lv_obj_set_style_transform_zoom(gh_bub[i], 256, 0);
 }
+static void gh_exit_async(void *) { gh_teardown(false); }   // game exited itself via Back (modules close themselves)
 static void gh_on_exit() { lv_async_call(gh_exit_async, NULL); }   // never delete the game's UI from inside its own callback
 static void gh_launch_async(void *) {
   int i = gh_pending; gh_pending = -1;
@@ -124,8 +127,7 @@ static void gh_build(lv_obj_t *t) {
 // call every loop with whether the Games page is on screen; closes a running game if the page is left
 static void gh_tick(bool visible) {
   static bool was = false;
-  if (gh_cur >= 0 && !gh_games[gh_cur].running()) gh_exit_async(NULL);   // game ended itself without on_exit
-  else if (gh_cur >= 0 && !visible) gh_exit_async(NULL);
+  if (gh_cur >= 0 && !visible) gh_teardown(true);   // page left: close the game
   if (visible && !was) gh_refresh();
   was = visible;
 }
