@@ -28,11 +28,11 @@
 
 static char status_txt[96] = "v" FW_STR " booting";
 static volatile bool want_check = false;
-static lv_obj_t *lbl, *lbl_time, *lbl_stat, *lbl_ver, *bar, *rec_btn, *rec_icon, *hs_img = NULL;
+static lv_obj_t *lbl_time, *lbl_stat, *bar, *rec_btn, *rec_icon, *hs_img = NULL;
 static int hs_frame = 0;
 static lv_obj_t *tv, *dots[5], *lbl_ver_small, *lbl_clock, *lbl_date, *lbl_tsrc, *lbl_info, *rec_list_obj, *lbl_listhdr;
 static lv_obj_t *play_box = NULL;
-#define NPAGES 5   // 0 Recorder, 1 Tauke, 2 Clock, 3 Recordings, 4 Status
+#define NPAGES 5   // 0 Recorder, 1 Tauke, 2 Clock, 3 Recordings, 4 Settings
 #define PG_LIST 3
 #define PG_STATUS 4
 #include "tauke_ui.h"
@@ -213,15 +213,6 @@ static void refresh_list() {
 }
 
 // ================= UI (v7: Notion-inspired, minimal, light) =================
-static void bat_short(char *out, size_t n) {
-  uint16_t st, mv, soc, cur_raw;
-  if (!bq_word(0x0A, &st) || !bq_word(0x08, &mv)) { snprintf(out, n, "unknown"); return; }
-  if (!(st & (1u << 3)) || mv < 2500) { snprintf(out, n, "USB power"); return; }
-  bq_word(0x2C, &soc); bq_word(0x0C, &cur_raw);
-  int cur = cur_raw < 0x8000 ? cur_raw : (int)cur_raw - 65536;
-  snprintf(out, n, "%u%%%s", soc, cur > 20 ? " charging" : "");
-}
-
 static void rec_show_state(int stt) {
   bool recording = stt == REC_RECORDING;
   // idle: red dot; recording: red stop square
@@ -233,18 +224,7 @@ static void rec_show_state(int stt) {
   lv_obj_set_style_text_color(lbl_time, lv_color_hex(recording ? C_TEXT : C_GREY), 0);
 }
 
-// status-page row: grey key on the left, value on the right, thin divider below
-static lv_obj_t *st_val[5];
-static void status_row(lv_obj_t *p, int i, const char *key) {
-  int y = 70 + i * 34;
-  lv_obj_t *k = ui_label(p, &lv_font_montserrat_14, C_GREY, 0, key);
-  lv_obj_align(k, LV_ALIGN_TOP_MID, -56, y);
-  st_val[i] = ui_label(p, &lv_font_montserrat_14, C_TEXT, 130, "");
-  lv_label_set_long_mode(st_val[i], LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(st_val[i], LV_TEXT_ALIGN_RIGHT, 0);
-  lv_obj_align(st_val[i], LV_ALIGN_TOP_MID, 46, y);
-  if (i < 4) ui_divider(p, 230, y + 26);
-}
+#include "settings_ui.h"
 
 static void build_ui() {
   ui_styles_init();
@@ -311,17 +291,8 @@ static void build_ui() {
   lv_obj_set_style_text_color(rec_list_obj, lv_color_hex(C_TEXT), 0);
   lv_obj_set_scrollbar_mode(rec_list_obj, LV_SCROLLBAR_MODE_OFF);
 
-  // ---------- page 4: status + Check update ----------
-  ui_title(t3, "Status");
-  ui_divider(t3, 220, 62);
-  status_row(t3, 0, "Battery"); status_row(t3, 1, "Wi-Fi"); status_row(t3, 2, "Storage");
-  status_row(t3, 3, "Mic"); status_row(t3, 4, "Firmware");
-  lv_obj_t *b = ui_btn(t3, 150, 34, "Check update", &lbl_ver);
-  lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 250);
-  lv_obj_add_event_cb(b, btn_cb, LV_EVENT_CLICKED, NULL);
-  lbl = ui_label(t3, &lv_font_montserrat_12, C_GREY, 200, "");   // net/OTA status
-  lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
-  lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, 292);
+  // ---------- page 4: settings (Android-style list) ----------
+  settings_build(t3);
 
   // ---------- page dots ----------
   for (int i = 0; i < NPAGES; i++) {
@@ -337,6 +308,7 @@ void setup() {
   I2C_Init(); Backlight_Init(); LCD_Init(); Lvgl_Init();
   pinMode(9, OUTPUT); digitalWrite(9, LOW);           // speaker amp off
   build_ui();
+  settings_load();   // volume, mic gain, brightness from NVS (before rec_init so the gain applies)
   ensure_tz();
   time_t e; if (rtc_read_epoch(&e)) { struct timeval tvv = { e, 0 }; settimeofday(&tvv, NULL); time_src = "from RTC (offline)"; }
   rec_init();
@@ -351,6 +323,7 @@ void loop() {
   if (now - last_tk >= 33) {   // Tauke face + state machine
     last_tk = now;
     tk_tick(last_page == 1 || lv_obj_get_scroll_x(tv) / 360 == 1 || (lv_obj_get_scroll_x(tv) + 359) / 360 == 1);
+    sub_tick();
   }
 #ifdef HAVE_HEADSET
   if (rec.state == REC_RECORDING && now - last_hs >= HEADSET_MS) {   // animate character while recording
@@ -360,7 +333,8 @@ void loop() {
 #endif
   if (now - last_ui >= 100) {
     last_ui = now;
-    if (strcmp(shown_net, status_txt)) { strcpy(shown_net, status_txt); lv_label_set_text(lbl, shown_net); }
+    if (!ota_lbl) shown_net[0] = 0;
+    else if (strcmp(shown_net, status_txt)) { strcpy(shown_net, status_txt); lv_label_set_text(ota_lbl, shown_net); }
     uint32_t s = rec.secs;
     snprintf(tbuf, sizeof tbuf, "%02lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
     lv_label_set_text(lbl_time, tbuf);
@@ -395,15 +369,8 @@ void loop() {
   if (now - last_slow >= 1000) {   // 1 Hz: clock, status page
     last_slow = now;
     time_tick();
-    if (last_page == PG_STATUS) {
-      char v[64], fr2[16];
-      bat_short(v, sizeof v); lv_label_set_text(st_val[0], v);
-      if (WiFi.status() == WL_CONNECTED) snprintf(v, sizeof v, "%s", WiFi.SSID().c_str()); else snprintf(v, sizeof v, "Join Puck-Setup");
-      lv_label_set_text(st_val[1], v);
-      fmt_dur(fr2, sizeof fr2, rec.free_secs); snprintf(v, sizeof v, "%s, %s", rec.storage, fr2); lv_label_set_text(st_val[2], v);
-      lv_label_set_text(st_val[3], strncmp(rec.mic, "mic: ok", 7) == 0 ? "OK" : rec.mic + (strncmp(rec.mic, "mic: ", 5) ? 0 : 5));
-      snprintf(v, sizeof v, "v%d", FW_VERSION); lv_label_set_text(st_val[4], v);
-    }
+    if (last_page == PG_STATUS) settings_summaries();
+    sub_refresh();
   }
   Lvgl_Loop();
   vTaskDelay(pdMS_TO_TICKS(5));

@@ -53,3 +53,11 @@ eyes (idle blink / listening look-up / thinking side-to-side / speaking squish+b
 - UI: white background, #37352F text, thin #E9E9E7 dividers, outline buttons, red only for record/stop. Recorder character = animated headset
   GIF (`headset_src.gif` -> `tools_gif2lvgl.py` -> `headset_img.h`, 60 frames 150 px LVGL indexed 2-bit, gitignored personal asset).
   Mock: `layout_mock_v7.png` (`tools_mock_v7.py`).
+
+### v8: always real Tauke + Settings
+- No Quick mode: the Tauke page always asks the real Grok Tauke routine (`/ask`, poll `/result`). Server `/talk` also always takes the real
+  route now (`ALWAYS_REAL`, default on; set `ALWAYS_REAL=0` on Railway to bring back the fast Grok chat).
+- Status page replaced by **Settings** (Android-style list: icon, title, grey summary). Rows open sub-screens with a back arrow (or swipe right):
+  Sound (volume + Test speaker), Microphone (gain 0-37.5 dB + live level + 3 s Mic test with playback), Display (brightness),
+  Storage, Wi-Fi (info + Change network = forget & restart into Puck-Setup), Battery, About (version, build date, device id, Check update).
+  Volume / gain / brightness are saved in NVS. Mock: `layout_mock_v8.png` (`tools_mock.py`, gitignored output).

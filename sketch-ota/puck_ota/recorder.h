@@ -42,3 +42,9 @@ void talk_play_stop();
 extern volatile bool talk_playing;
 extern volatile uint32_t talk_play_pos;                     // samples played so far
 extern volatile int talk_level;                             // 0..100 live level (mic or speaker)
+
+// ---- settings shared with the UI ----
+extern volatile int g_spk_volume;   // 0..100, applied at next playback start
+extern volatile int g_mic_gain;     // ES7210 gain index 0..14 (0,3,..,33,34.5,36,37.5 dB), applied at next mic open
+uint64_t rec_free_bytes();
+uint64_t rec_total_bytes();

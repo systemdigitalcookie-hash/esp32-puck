@@ -36,8 +36,7 @@ def recorder(recording):
 
 def tauke(real, state):
     im, d = page()
-    if real: btn(d, 180, 26, 120, 28, "Real Tauke", 14, TEXT, BG, 12)
-    else: btn(d, 180, 26, 120, 28, "Quick", 14, BG, GREY, 12)
+    ctext(d, 28, "Tauke", 20)
     fx, fy, fw, fh = 180, 66, 184, 150
     d.rounded_rectangle((fx - fw / 2, fy, fx + fw / 2, fy + fh), 72, fill="#FFFFFF", outline=LINE, width=2)
     cy = fy + fh / 2 - 2; dx = 14 if state == "think" else 0; dy = -6 if state == "think" else 0; h = 50 if state == "think" else 56; w = 26 if state == "think" else 28
@@ -71,9 +70,46 @@ def status():
         if i < 4: div(d, y + 26, 230)
     btn(d, 180, 250, 150, 34, "Check update"); ctext(d, 292, "Up to date", 12, GREY); dots(d, 4); return im
 
-panels = [("1 Recorder (idle)", recorder(False)), ("1 Recorder (recording)", recorder(True)), ("2 Tauke - Quick", tauke(False, "idle")),
-          ("2 Tauke - Real, waiting", tauke(True, "think")), ("2 Tauke - speaking", tauke(True, "speak")), ("3 Clock", clock()),
-          ("4 Recordings", recordings()), ("5 Status", status())]
+
+ICON = {"Sound": "\u266a", "Microphone": "\u25cf", "Display": "\u25d0", "Storage": "\u25a4", "Wi-Fi": "\u2248", "Battery": "\u25ae", "About": "\u2699"}
+SYM = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
+def settings():
+    im, d = page(); ctext(d, 28, "Settings", 20); div(d, 62)
+    rows = [("Sound", "Volume 80"), ("Microphone", "Gain 30 dB"), ("Display", "Brightness 70%"), ("Storage", "SD 29.7 GB free"),
+            ("Wi-Fi", "HomeNet"), ("Battery", "85%"), ("About", "Firmware v8")]
+    for i, (t, sm) in enumerate(rows[:5]):
+        y = 64 + i * 52
+        d.text((55 + 14, y + 17), ICON[t], font=SYM, fill=GREY)
+        d.text((55 + 48, y + 8), t, font=font(14), fill=TEXT); d.text((55 + 48, y + 28), sm, font=font(12), fill=GREY)
+        d.text((55 + 250 - 18, y + 18), ">", font=font(12), fill=LINE)
+        d.line((55, y + 51, 305, y + 51), fill=DIV)
+    dots(d, 4); return im
+def subhdr(d, title):
+    d.ellipse((70, 22, 106, 58), fill=BG); ctext(d, 30, "<", 18, TEXT, 88); ctext(d, 28, title, 20); div(d, 62)
+def sound():
+    im, d = page(); subhdr(d, "Sound")
+    f = font(14); d.text((90, 92), "Volume", font=f, fill=GREY); d.text((252, 92), "80", font=f, fill=TEXT)
+    d.rounded_rectangle((75, 128, 285, 134), 3, fill=DIV); d.rounded_rectangle((75, 128, 243, 134), 3, fill=TEXT)
+    d.ellipse((233, 121, 253, 141), fill=BG, outline=LINE)
+    btn(d, 180, 176, 150, 36, "Test speaker"); return im
+def mic():
+    im, d = page(); subhdr(d, "Microphone")
+    f = font(14); d.text((88, 92), "Gain", font=f, fill=GREY); d.text((236, 92), "30 dB", font=f, fill=TEXT)
+    d.rounded_rectangle((75, 128, 285, 134), 3, fill=DIV); d.rounded_rectangle((75, 128, 225, 134), 3, fill=TEXT)
+    d.ellipse((215, 121, 235, 141), fill=BG, outline=LINE)
+    ctext(d, 158, "Level", 12, GREY); d.rounded_rectangle((75, 178, 285, 184), 3, fill=DIV); d.rounded_rectangle((75, 178, 160, 184), 3, fill=TEXT)
+    btn(d, 180, 200, 150, 36, "Mic test"); ctext(d, 248, "Records 3 s, then plays it back", 12, GREY); return im
+def about():
+    im, d = page(); subhdr(d, "About")
+    f = font(14)
+    for i, (k, v) in enumerate([("Firmware", "v8"), ("Built", "Nov 19 2026"), ("Device", "F412FA3C5B10")]):
+        y = 76 + i * 34; kw = d.textlength(k, font=f); d.text((120 - kw / 2, y), k, font=f, fill=GREY)
+        vw = d.textlength(v, font=f); d.text((298 - vw, y), v, font=f, fill=TEXT); div(d, y + 26, 236)
+    btn(d, 180, 186, 150, 36, "Check update"); ctext(d, 232, "Up to date", 12, GREY); return im
+panels = [("1 Recorder (idle)", recorder(False)), ("1 Recorder (recording)", recorder(True)), ("2 Tauke (idle)", tauke(True, "idle")),
+          ("2 Tauke - waiting", tauke(True, "think")), ("2 Tauke - speaking", tauke(True, "speak")), ("3 Clock", clock()),
+          ("4 Recordings", recordings()), ("5 Settings", settings()), ("5 Settings > Sound", sound()), ("5 Settings > Microphone", mic()),
+          ("5 Settings > About", about())]
 cols = 4; W = 400; H = 430
 sheet = Image.new("RGB", (cols * W, ((len(panels) + cols - 1) // cols) * H), "#2b2b2b")
 mask = Image.new("L", (360, 360), 0); ImageDraw.Draw(mask).ellipse((0, 0, 359, 359), fill=255)
@@ -82,4 +118,4 @@ for i, (name, im) in enumerate(panels):
     x, y = (i % cols) * W + 20, (i // cols) * H + 20
     sheet.paste(im, (x, y), mask)
     sd.text((x, y + 372), name, font=font(16), fill="#e0e0e0")
-sheet.save("layout_mock_v7.png"); print("ok", sheet.size)
+sheet.save("layout_mock_v8.png"); print("ok", sheet.size)

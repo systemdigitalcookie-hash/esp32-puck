@@ -129,6 +129,8 @@ const WEBHOOK_URL = process.env.TAUKE_WEBHOOK_URL;
 const WEBHOOK_KEY = process.env.TAUKE_WEBHOOK_KEY;
 const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://tauke-production.up.railway.app').replace(/\/$/, '');
 const REAL_TIMEOUT = 3 * 60 * 1000;
+// Thomas: no Quick mode - /talk always goes to the real Grok Tauke routine (set ALWAYS_REAL=0 to restore the fast Grok chat)
+const ALWAYS_REAL = !/^(0|false|no|off)$/i.test(process.env.ALWAYS_REAL || '1');
 const pending = new Map(); // request_id -> {dev, text, cbToken, t, status: 'waiting'|'tts'|'ready'|'error', reply, pcm, err}
 // "ask Tauke ..." (STT may hear Talk / Towkay / Tokay ...)
 const ASK_RE = /^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:ask|asked|asks)\s+(?:the\s+)?(?:real\s+)?(?:tauke|towkay|towkey|taukay|toukay|tokay|tow\s*kay|tau\s*ke|tao\s*k(?:e|ay)?|dao\s*ke|tok\s*kay|toke|talk|tuck(?:ay|ey)?)\b[\s,.:;!?-]*/i;
@@ -203,6 +205,7 @@ async function handleTalk(req, res, forceReal) {
   if (req.method !== 'POST') return sendErr(res, 405, 'POST only');
   const dev = deviceGate(req, res); if (!dev) return;
   if (!KEY) return sendErr(res, 500, 'server has no XAI key');
+  if (ALWAYS_REAL) forceReal = true;
   if (forceReal && !(WEBHOOK_URL && WEBHOOK_KEY)) return sendErr(res, 503, 'Real Tauke not set up');
   if (!allowUse(dev)) return sendErr(res, 429, 'daily limit reached');
   const tag = forceReal ? 'ask' : 'talk';
@@ -273,7 +276,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ ok: true, service: 'puck-tauke', chat: CHAT_MODEL, stt: STT_MODEL, voice: TTS_VOICE, real_tauke: !!(WEBHOOK_URL && WEBHOOK_KEY) }));
+    return res.end(JSON.stringify({ ok: true, service: 'puck-tauke', chat: CHAT_MODEL, stt: STT_MODEL, voice: TTS_VOICE, real_tauke: !!(WEBHOOK_URL && WEBHOOK_KEY), always_real: ALWAYS_REAL }));
   }
   if (url.pathname === '/talk') return handleTalk(req, res, false);
   if (url.pathname === '/ask') return handleTalk(req, res, true);
@@ -283,4 +286,4 @@ const server = http.createServer(async (req, res) => {
   return sendErr(res, 404, 'not found');
 });
 server.requestTimeout = 120000;
-server.listen(PORT, () => console.log(`puck-tauke on :${PORT} chat=${CHAT_MODEL} stt=${STT_MODEL} voice=${TTS_VOICE} token=${TOKEN ? 'set' : 'MISSING'} realTauke=${WEBHOOK_URL && WEBHOOK_KEY ? 'set' : 'not set'}`));
+server.listen(PORT, () => console.log(`puck-tauke on :${PORT} chat=${CHAT_MODEL} stt=${STT_MODEL} voice=${TTS_VOICE} token=${TOKEN ? 'set' : 'MISSING'} realTauke=${WEBHOOK_URL && WEBHOOK_KEY ? 'set' : 'not set'} alwaysReal=${ALWAYS_REAL}`));

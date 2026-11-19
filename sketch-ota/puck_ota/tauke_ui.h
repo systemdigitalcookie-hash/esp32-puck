@@ -1,8 +1,7 @@
 // ================= Tauke voice page (included once from puck_ota.ino) =================
 // Hold-to-talk -> 16 kHz PCM POST to the Tauke server (secrets.h: TAUKE_URL, TAUKE_TOKEN; gitignored).
-// Quick mode: POST /talk -> reply PCM right away (Grok chat with Tauke persona).
-// Real mode:  POST /ask  -> 202 {request_id}; poll GET /result/<id> every 2 s (<= 3 min) -> PCM from the real Grok Tauke routine.
-// /talk also answers 202 when the transcript starts with "ask Tauke", and we then poll the same way.
+// v8: always the REAL Grok Tauke (no Quick mode): POST /ask -> 202 {request_id}; poll GET /result/<id> every 2 s (<= 3 min)
+// -> reply PCM from the Grok Tauke routine. (A 200 with audio is still accepted, in case the server answers directly.)
 #pragma once
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -25,13 +24,12 @@ enum { TK_IDLE = 0, TK_LISTEN, TK_THINK, TK_SPEAK, TK_ERROR };
 #define TK_OUT_MAX (16000 * 60)   // 60 s max answer
 #define TK_REAL_WAIT_MS (185000)  // give up polling after ~3 min
 static volatile int tk_state = TK_IDLE;
-static bool tk_real = false;                       // mode, remembered in NVS ("puck"/"tk_real")
 static int16_t *tk_mic = NULL, *tk_out = NULL;
 static volatile uint32_t tk_mic_n = 0, tk_out_n = 0;
 static volatile bool tk_net_done = false, tk_net_running = false, tk_cancel = false, tk_polling = false;
 static volatile uint32_t tk_poll_t0 = 0;
 static char tk_err[72], tk_reply[640], tk_heard[240];
-static lv_obj_t *tk_face, *tk_eye[2], *tk_brow[2], *tk_btn, *tk_btn_lbl, *tk_cap_box, *tk_cap, *tk_mode, *tk_mode_lbl;
+static lv_obj_t *tk_face, *tk_eye[2], *tk_brow[2], *tk_btn, *tk_btn_lbl, *tk_cap_box, *tk_cap;
 static uint32_t tk_t0 = 0, tk_err_until = 0, tk_next_blink = 3000;
 
 static void tk_urldecode(const String &in, char *out, size_t n) {
@@ -97,7 +95,7 @@ static void tk_net_task(void *) {
     String req_id;
     {
       HTTPClient h;
-      tk_begin(h, c, tk_base() + (tk_real ? "/ask" : "/talk"));
+      tk_begin(h, c, tk_base() + "/ask");
       h.addHeader("Content-Type", "audio/pcm");
       int code = h.sendRequest("POST", (uint8_t *)tk_mic, tk_mic_n * 2);
       tk_urldecode(h.header("X-Transcript"), tk_heard, sizeof tk_heard);
@@ -136,13 +134,6 @@ static void tk_set_caption(const char *txt, uint32_t color) {
   lv_obj_scroll_to_y(tk_cap_box, 0, LV_ANIM_OFF);
 }
 
-static void tk_show_mode() {
-  lv_label_set_text(tk_mode_lbl, tk_real ? "Real Tauke" : "Quick");
-  lv_obj_set_style_bg_color(tk_mode, lv_color_hex(tk_real ? C_TEXT : C_BG), 0);
-  lv_obj_set_style_text_color(tk_mode, lv_color_hex(tk_real ? C_BG : C_GREY), 0);
-  for (int i = 0; i < 2; i++) { if (tk_real) lv_obj_clear_flag(tk_brow[i], LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(tk_brow[i], LV_OBJ_FLAG_HIDDEN); }
-}
-
 static void tk_go(int st) {
   tk_state = st; tk_t0 = millis();
   lv_label_set_text(tk_btn_lbl, st == TK_LISTEN ? "Release to send" : (st == TK_SPEAK ? "Tap to stop" : (st == TK_THINK ? "Tap to cancel" : "Hold to talk")));
@@ -166,14 +157,6 @@ static void tk_send() {
   tk_set_caption("", C_GREY);
   tk_go(TK_THINK);
   if (xTaskCreate(tk_net_task, "tk_net", 12288, NULL, 2, NULL) != pdPASS) { tk_net_running = false; tk_error("Out of memory"); }
-}
-
-static void tk_mode_cb(lv_event_t *e) {
-  if (tk_state != TK_IDLE && tk_state != TK_ERROR) return;
-  tk_real = !tk_real;
-  Preferences p; if (p.begin("puck", false)) { p.putBool("tk_real", tk_real); p.end(); }
-  tk_show_mode();
-  tk_set_caption(tk_real ? "Asks your real Tauke bot.\nCan take a minute." : "Fast answers", C_GREY);
 }
 
 static void tk_btn_cb(lv_event_t *e) {
@@ -203,16 +186,9 @@ static void tk_btn_cb(lv_event_t *e) {
 static void tk_build(lv_obj_t *t) {
   tk_mic = (int16_t *)heap_caps_malloc(TK_MIC_MAX * 2, MALLOC_CAP_SPIRAM);
   tk_out = (int16_t *)heap_caps_malloc(TK_OUT_MAX * 2, MALLOC_CAP_SPIRAM);
-  { Preferences p; if (p.begin("puck", true)) { tk_real = p.getBool("tk_real", false); p.end(); } }
   lv_obj_clear_flag(t, LV_OBJ_FLAG_SCROLLABLE);
 
-  // mode pill (top): Quick <-> Real Tauke
-  tk_mode = ui_btn(t, 120, 28, "Quick", &tk_mode_lbl);
-  lv_obj_set_style_radius(tk_mode, 14, 0);
-  lv_obj_set_style_text_font(tk_mode, &lv_font_montserrat_12, 0);
-  lv_obj_align(tk_mode, LV_ALIGN_TOP_MID, 0, 26);
-  lv_obj_clear_flag(tk_mode, LV_OBJ_FLAG_SCROLL_CHAIN_HOR);
-  lv_obj_add_event_cb(tk_mode, tk_mode_cb, LV_EVENT_CLICKED, NULL);
+  ui_title(t, "Tauke");
 
   tk_face = lv_obj_create(t); lv_obj_remove_style_all(tk_face);
   lv_obj_set_size(tk_face, 184, 150); lv_obj_align(tk_face, LV_ALIGN_TOP_MID, 0, 66);
@@ -225,7 +201,7 @@ static void tk_build(lv_obj_t *t) {
     lv_obj_set_style_radius(tk_eye[i], LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(tk_eye[i], LV_OPA_COVER, 0); lv_obj_set_style_bg_color(tk_eye[i], lv_color_hex(0x111111), 0);
     lv_obj_clear_flag(tk_eye[i], LV_OBJ_FLAG_CLICKABLE);
-    tk_brow[i] = lv_obj_create(tk_face); lv_obj_remove_style_all(tk_brow[i]);   // eyebrows = "Real Tauke" hint
+    tk_brow[i] = lv_obj_create(tk_face); lv_obj_remove_style_all(tk_brow[i]);   // eyebrows: the real Tauke look
     lv_obj_set_size(tk_brow[i], 28, 5); lv_obj_set_style_radius(tk_brow[i], 3, 0);
     lv_obj_set_style_bg_opa(tk_brow[i], LV_OPA_COVER, 0); lv_obj_set_style_bg_color(tk_brow[i], lv_color_hex(0x111111), 0);
     lv_obj_clear_flag(tk_brow[i], LV_OBJ_FLAG_CLICKABLE);
@@ -245,7 +221,6 @@ static void tk_build(lv_obj_t *t) {
 #ifndef TAUKE_URL
   tk_set_caption("Not configured in this build", C_GREY);
 #endif
-  tk_show_mode();
 }
 
 // eyes: w/h size, dx/dy offset from rest position; brows follow
@@ -276,7 +251,7 @@ static void tk_tick(bool visible) {
     if (now - last > 500) {
       last = now; char b[300];
       if (tk_polling) snprintf(b, sizeof b, "Asking Tauke... %lus\n%s", (unsigned long)((now - tk_poll_t0) / 1000), tk_heard);
-      else snprintf(b, sizeof b, "Thinking...");
+      else snprintf(b, sizeof b, "Sending...");
       if (strcmp(lv_label_get_text(tk_cap), b)) lv_label_set_text(tk_cap, b);
     }
   }

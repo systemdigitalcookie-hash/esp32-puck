@@ -22,6 +22,8 @@
 
 extern int es7210_last_wire_err, es7210_last_reg;
 RecInfo rec;
+volatile int g_spk_volume = 80;   // ES8311 0..100 (Settings > Sound)
+volatile int g_mic_gain = 10;     // ES7210 gain index 0..14, 10 = 30 dB (Settings > Microphone)
 static uint8_t es_addr = 0x40;
 static I2SClass i2s;
 static es7210_dev_handle_t es_h = NULL;
@@ -173,7 +175,7 @@ static bool codec_configure(char *err, size_t en) {
   if (es7210_new_codec(&cfg, &es_h) != ESP_OK) { snprintf(err, en, "es7210 alloc fail"); return false; }
   es7210_codec_config_t cc = {};
   cc.i2s_format = ES7210_I2S_FMT_I2S; cc.mclk_ratio = 256; cc.sample_rate_hz = SR;
-  cc.bit_width = ES7210_I2S_BITS_16B; cc.mic_bias = ES7210_MIC_BIAS_2V87; cc.mic_gain = ES7210_MIC_GAIN_30DB;
+  cc.bit_width = ES7210_I2S_BITS_16B; cc.mic_bias = ES7210_MIC_BIAS_2V87; cc.mic_gain = (es7210_mic_gain_t)constrain(g_mic_gain, 0, 14);
   cc.flags.tdm_enable = false;
   if (es7210_config_codec(es_h, &cc) != ESP_OK || es7210_config_volume(es_h, 0) != ESP_OK) {
     if (es7210_last_wire_err) snprintf(err, en, "i2c e%d @0x%02X reg 0x%02X", es7210_last_wire_err, es_addr, es7210_last_reg);
@@ -326,7 +328,7 @@ void rec_play(const char *name) {
   const es8311_clock_config_t clk = { .mclk_inverted = false, .sclk_inverted = false, .mclk_from_mclk_pin = true,
                                       .mclk_frequency = SR * 256, .sample_frequency = SR };
   if (!dac_h || es8311_init(dac_h, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16) != ESP_OK ||
-      es8311_voice_volume_set(dac_h, 70, NULL) != ESP_OK || es8311_microphone_config(dac_h, false) != ESP_OK) {
+      es8311_voice_volume_set(dac_h, g_spk_volume, NULL) != ESP_OK || es8311_microphone_config(dac_h, false) != ESP_OK) {
     pf.close(); i2s.end(); put_msg("play: es8311 failed"); return;
   }
   digitalWrite(PIN_PA, HIGH);
@@ -418,7 +420,7 @@ bool talk_play_start(const int16_t *pcm, uint32_t samples) {
   const es8311_clock_config_t clk = { .mclk_inverted = false, .sclk_inverted = false, .mclk_from_mclk_pin = true,
                                       .mclk_frequency = SR * 256, .sample_frequency = SR };
   if (!dac_h || es8311_init(dac_h, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16) != ESP_OK ||
-      es8311_voice_volume_set(dac_h, 80, NULL) != ESP_OK || es8311_microphone_config(dac_h, false) != ESP_OK) {
+      es8311_voice_volume_set(dac_h, g_spk_volume, NULL) != ESP_OK || es8311_microphone_config(dac_h, false) != ESP_OK) {
     i2s.end(); put_msg("play: es8311 failed"); return false;
   }
   digitalWrite(PIN_PA, HIGH);
@@ -428,3 +430,14 @@ bool talk_play_start(const int16_t *pcm, uint32_t samples) {
 }
 
 void talk_play_stop() { tp_stop = true; }
+
+uint64_t rec_free_bytes() {
+  if (store == &SD_MMC) return SD_MMC.totalBytes() - SD_MMC.usedBytes();
+  if (store == &FFat) return FFat.freeBytes();
+  return 0;
+}
+uint64_t rec_total_bytes() {
+  if (store == &SD_MMC) return SD_MMC.totalBytes();
+  if (store == &FFat) return FFat.totalBytes();
+  return 0;
+}
