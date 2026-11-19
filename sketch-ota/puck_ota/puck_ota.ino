@@ -30,7 +30,7 @@
 static char status_txt[96] = "v" FW_STR " booting";
 static volatile bool want_check = false;
 static lv_obj_t *tv, *dots[5], *lbl_clock, *lbl_date, *lbl_tsrc;
-#define NPAGES 5   // 0 Recorder (+ recordings), 1 Tauke, 2 Clock, 3 Drive game, 4 Settings
+#define NPAGES 5   // 0 Recorder (+ recordings), 1 Tauke, 2 Clock, 3 Games, 4 Settings
 #define PG_TAUKE 1
 #define PG_GAME 3
 #define PG_STATUS 4
@@ -142,7 +142,7 @@ static void battery_text(char *out, size_t n) {
 }
 
 #include "settings_ui.h"
-#include "game_ui.h"
+#include "games_hub.h"
 
 static void build_ui() {
   ui_styles_init();
@@ -177,8 +177,8 @@ static void build_ui() {
   lbl_tsrc = ui_label(t1, &lv_font_montserrat_12, C_GREY, 240, "");
   lv_obj_align(lbl_tsrc, LV_ALIGN_TOP_MID, 0, 212);
 
-  // ---------- page 3: Drive game ----------
-  gm_build(t2);
+  // ---------- page 3: Games hub ----------
+  gh_build(t2);
 
   // ---------- page 4: settings (Android-style list) ----------
   settings_build(t3);
@@ -217,7 +217,7 @@ void loop() {
     ru_tick(now);
     sub_tick();
   }
-  gm_tick(now, settled ? sx / 360 == PG_GAME : (sx / 360 == PG_GAME || (sx + 359) / 360 == PG_GAME));
+  gh_tick(settled ? sx / 360 == PG_GAME : (sx / 360 == PG_GAME || (sx + 359) / 360 == PG_GAME));
   if (now - last_ui >= 100) {
     last_ui = now;
     if (!ota_lbl) shown_net[0] = 0;
@@ -237,5 +237,5 @@ void loop() {
     sub_refresh();
   }
   Lvgl_Loop();
-  vTaskDelay(pdMS_TO_TICKS(gm == GM_PLAY ? 1 : 5));
+  vTaskDelay(pdMS_TO_TICKS(gh_cur >= 0 ? 1 : 5));
 }
