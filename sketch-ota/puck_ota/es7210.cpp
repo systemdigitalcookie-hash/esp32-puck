@@ -126,6 +126,7 @@ static const coeff_div_t *es7210_get_coeff(uint32_t mclk, uint32_t lrck)
 }
 
 
+int es7210_last_wire_err = 0, es7210_last_reg = -1;   // diagnostics for the UI
 static bool i2c_reg8_write(uint8_t dev_addr, uint8_t reg_addr, uint8_t *data, uint8_t len) {
   uint8_t error;
   Wire.beginTransmission(dev_addr);
@@ -135,6 +136,7 @@ static bool i2c_reg8_write(uint8_t dev_addr, uint8_t reg_addr, uint8_t *data, ui
   }
   error = Wire.endTransmission(true);
   if (error) {
+    es7210_last_wire_err = error; es7210_last_reg = reg_addr;
     printf("endTransmission: %u\n", error);
     return false;
   }

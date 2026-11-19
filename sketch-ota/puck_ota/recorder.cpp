@@ -18,7 +18,9 @@
 #define RING_SZ (256 * 1024)
 #define CHUNK_FRAMES 512
 
+extern int es7210_last_wire_err, es7210_last_reg;
 RecInfo rec;
+static uint8_t es_addr = 0x40;
 static I2SClass i2s;
 static es7210_dev_handle_t es_h = NULL;
 static fs::FS *store = nullptr;
@@ -71,9 +73,11 @@ static uint32_t free_bytes() {
 
 static bool mount_storage() {
   if (!sd_ok) {
-    SD_MMC.setPins(15, 14, 16, 17, 12, 13);   // CLK, CMD, D0..D3 (4-bit)
-    sd_ok = SD_MMC.begin("/sdcard", false, false, 20000);
+    bool pins = SD_MMC.setPins(15, 14, 16, 17, 12, 13);
+    sd_ok = SD_MMC.begin("/sdcard", false, false, 20000);          // 4-bit, 20 MHz
+    if (!sd_ok) sd_ok = SD_MMC.begin("/sdcard", true, false, 5000); // 1-bit, 5 MHz fallback
     if (sd_ok && SD_MMC.cardType() == CARD_NONE) { SD_MMC.end(); sd_ok = false; }
+    snprintf(rec.sd, sizeof rec.sd, sd_ok ? "SD card ok" : (pins ? "no SD card" : "SD pins err"));
   }
   if (sd_ok) { store = &SD_MMC; strcpy(rec.storage, "SD"); }
   else {
@@ -146,26 +150,82 @@ static void writer_task(void *) {
   vTaskDelete(NULL);
 }
 
+static void i2c_scan() {
+  char *p = rec.i2c; size_t left = sizeof rec.i2c;
+  int n = snprintf(p, left, "I2C:"); p += n; left -= n;
+  for (int a = 1; a < 127; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0 && left > 5) { n = snprintf(p, left, " %02X", a); p += n; left -= n; }
+  }
+}
+
+static bool addr_present(uint8_t a) { Wire.beginTransmission(a); return Wire.endTransmission() == 0; }
+
+// Configure ES7210 at es_addr. Call with I2S already running so MCLK is present (as in Waveshare's apps).
+static bool codec_configure(char *err, size_t en) {
+  if (es_h) { es7210_del_codec(es_h); es_h = NULL; }
+  es7210_i2c_config_t cfg = {}; cfg.i2c_addr = es_addr;
+  es7210_last_wire_err = 0; es7210_last_reg = -1;
+  if (es7210_new_codec(&cfg, &es_h) != ESP_OK) { snprintf(err, en, "es7210 alloc fail"); return false; }
+  es7210_codec_config_t cc = {};
+  cc.i2s_format = ES7210_I2S_FMT_I2S; cc.mclk_ratio = 256; cc.sample_rate_hz = SR;
+  cc.bit_width = ES7210_I2S_BITS_16B; cc.mic_bias = ES7210_MIC_BIAS_2V87; cc.mic_gain = ES7210_MIC_GAIN_30DB;
+  cc.flags.tdm_enable = false;
+  if (es7210_config_codec(es_h, &cc) != ESP_OK || es7210_config_volume(es_h, 40) != ESP_OK) {
+    if (es7210_last_wire_err) snprintf(err, en, "i2c e%d @0x%02X reg 0x%02X", es7210_last_wire_err, es_addr, es7210_last_reg);
+    else snprintf(err, en, "es7210 cfg err @0x%02X", es_addr);
+    return false;
+  }
+  return true;
+}
+
+static bool i2s_open() {
+  i2s.setPins(PIN_BCK, PIN_WS, PIN_DOUT, PIN_DIN, PIN_MCK);
+  i2s.setTimeout(1000);
+  return i2s.begin(I2S_MODE_STD, SR, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+}
+
+// Open I2S (MCLK on), configure codec; tries addresses 0x40-0x43 that answer on the bus.
+static bool mic_open(char *err, size_t en) {
+  if (!i2s_open()) { snprintf(err, en, "i2s begin failed"); return false; }
+  delay(30);
+  bool found = false;
+  for (uint8_t a = 0x40; a <= 0x43; a++) {
+    if (!addr_present(a)) continue;
+    found = true; es_addr = a;
+    if (codec_configure(err, en)) { delay(20); return true; }
+  }
+  if (!found) snprintf(err, en, "no ES7210 at 0x40-0x43");
+  i2s.end();
+  return false;
+}
+
 bool rec_init() {
   memset((void *)&rec, 0, sizeof rec);
+  strcpy(rec.mic, "mic: not tested");
+  i2c_scan();
   ring = (uint8_t *)heap_caps_malloc(RING_SZ, MALLOC_CAP_SPIRAM);
-  if (!ring) { put_msg("no PSRAM"); return false; }
-  es7210_i2c_config_t cfg = {}; cfg.i2c_addr = 0x40;
-  if (es7210_new_codec(&cfg, &es_h) == ESP_OK) {
-    es7210_codec_config_t cc = {};
-    cc.i2s_format = ES7210_I2S_FMT_I2S; cc.mclk_ratio = 256; cc.sample_rate_hz = SR;
-    cc.bit_width = ES7210_I2S_BITS_16B; cc.mic_bias = ES7210_MIC_BIAS_2V87; cc.mic_gain = ES7210_MIC_GAIN_30DB;
-    cc.flags.tdm_enable = false;
-    codec_ok = es7210_config_codec(es_h, &cc) == ESP_OK && es7210_config_volume(es_h, 40) == ESP_OK;
-  }
-  if (!codec_ok) put_msg("mic init failed");
+  if (!ring) { put_msg("no PSRAM"); snprintf(rec.mic, sizeof rec.mic, "mic: no PSRAM"); return false; }
+  char err[48];
+  if (mic_open(err, sizeof err)) {
+    // self-test: read ~0.25 s and report level so we know audio really flows
+    static int16_t t[CHUNK_FRAMES * 2]; int peak = 0, ok = 0;
+    for (int i = 0; i < 12; i++) {
+      size_t g = i2s.readBytes((char *)t, sizeof t);
+      if (g == sizeof t) { ok++; if (i >= 4) for (int k = 0; k < CHUNK_FRAMES * 2; k++) { int a = abs((int)t[k]); if (a > peak) peak = a; } }
+    }
+    i2s.end();
+    codec_ok = ok >= 8;
+    if (codec_ok) snprintf(rec.mic, sizeof rec.mic, "mic: ok @0x%02X peak %d", es_addr, peak);
+    else snprintf(rec.mic, sizeof rec.mic, "mic: i2s read timeout @0x%02X (%d/12)", es_addr, ok);
+  } else snprintf(rec.mic, sizeof rec.mic, "mic: %s", err);
   bool ok = mount_storage();
-  if (ok && codec_ok) put_msg("ready");
+  if (ok && codec_ok) put_msg("ready"); else if (!codec_ok) put_msg("mic problem");
   return ok && codec_ok;
 }
 
 void rec_start() {
-  if (rec.state != REC_IDLE || !ring || !codec_ok) return;
+  if (rec.state != REC_IDLE || !ring) return;
   if (!mount_storage()) return;
   int c, maxidx; scan_files(&c, &maxidx, nullptr);
   char path[40]; snprintf(path, sizeof path, "/rec/rec_%04d.wav", maxidx + 1);
@@ -175,10 +235,10 @@ void rec_start() {
   if (!wf) { put_msg("cannot create file"); return; }
   uint8_t h[44]; wav_header(h, 0); wf.write(h, 44);
   data_bytes = 0; head = tail = 0; rec.dropped = 0; rec.secs = 0; rec.level = 0;
-  i2s.setPins(PIN_BCK, PIN_WS, PIN_DOUT, PIN_DIN, PIN_MCK);
-  i2s.setTimeout(1000);
-  if (!i2s.begin(I2S_MODE_STD, SR, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO)) {
-    put_msg("i2s failed"); wf.close(); store->remove(path); return;
+  char err[48];
+  if (!mic_open(err, sizeof err)) {
+    snprintf(rec.mic, sizeof rec.mic, "mic: %s", err);
+    put_msg("mic start failed"); wf.close(); store->remove(path); return;
   }
   stop_req = false; cap_done = false;
   put_msg("recording");
