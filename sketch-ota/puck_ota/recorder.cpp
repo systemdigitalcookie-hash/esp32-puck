@@ -161,6 +161,8 @@ static void i2c_scan() {
 
 static bool addr_present(uint8_t a) { Wire.beginTransmission(a); return Wire.endTransmission() == 0; }
 
+// NOTE: es7210_config_volume() only accepts -95..32 dB; v2/v3 passed 40 (copied from Waveshare's sample) -> ESP_ERR_INVALID_ARG
+// with no I2C error, shown as "es7210 cfg err". Now 0 dB (analog gain is set separately to 30 dB).
 // Configure ES7210 at es_addr. Call with I2S already running so MCLK is present (as in Waveshare's apps).
 static bool codec_configure(char *err, size_t en) {
   if (es_h) { es7210_del_codec(es_h); es_h = NULL; }
@@ -171,7 +173,7 @@ static bool codec_configure(char *err, size_t en) {
   cc.i2s_format = ES7210_I2S_FMT_I2S; cc.mclk_ratio = 256; cc.sample_rate_hz = SR;
   cc.bit_width = ES7210_I2S_BITS_16B; cc.mic_bias = ES7210_MIC_BIAS_2V87; cc.mic_gain = ES7210_MIC_GAIN_30DB;
   cc.flags.tdm_enable = false;
-  if (es7210_config_codec(es_h, &cc) != ESP_OK || es7210_config_volume(es_h, 40) != ESP_OK) {
+  if (es7210_config_codec(es_h, &cc) != ESP_OK || es7210_config_volume(es_h, 0) != ESP_OK) {
     if (es7210_last_wire_err) snprintf(err, en, "i2c e%d @0x%02X reg 0x%02X", es7210_last_wire_err, es_addr, es7210_last_reg);
     else snprintf(err, en, "es7210 cfg err @0x%02X", es_addr);
     return false;

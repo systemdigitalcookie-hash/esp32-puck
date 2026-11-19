@@ -57,6 +57,8 @@ static void net_task(void *) {
 }
 
 #define MELODY_ZOOM_IDLE 170   // ~66%: 58x80 px, static
+#define MELODY_TOP_IDLE 78     // box top; drawn 58x80 spans y=98..178
+#define MELODY_TOP_REC 100     // drawn 88x120 spans y=100..220
 #define MELODY_ZOOM_REC 256    // 100%: 88x120 px, bobbing
 static void rec_cb(lv_event_t *e) {
   if (rec.state == REC_IDLE) rec_start();
@@ -93,12 +95,13 @@ static void build_ui() {
   lv_label_set_long_mode(lbl_diag, LV_LABEL_LONG_WRAP); lv_obj_set_size(lbl_diag, 230, 46);
   lv_obj_set_style_text_align(lbl_diag, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_color(lbl_diag, lv_color_hex(0xc8d4e0), 0);
-  lv_label_set_text(lbl_diag, ""); lv_obj_align(lbl_diag, LV_ALIGN_TOP_MID, 0, 184);
+  lv_label_set_text(lbl_diag, ""); lv_obj_align(lbl_diag, LV_ALIGN_TOP_MID, 0, 182);
 
 #ifdef HAVE_MELODY
   melody = lv_img_create(scr); lv_img_set_src(melody, &melody_img);
+  lv_obj_set_size(melody, 88, 120);                        // fixed box; zoom draws around its centre
   lv_img_set_zoom(melody, MELODY_ZOOM_IDLE);               // 256 = 100%
-  lv_obj_align(melody, LV_ALIGN_TOP_MID, 0, 100);
+  lv_obj_align(melody, LV_ALIGN_TOP_MID, 0, MELODY_TOP_IDLE);
 #endif
 
   rec_btn = lv_btn_create(scr); lv_obj_set_size(rec_btn, 58, 58); lv_obj_align(rec_btn, LV_ALIGN_TOP_MID, 0, 232);
@@ -125,9 +128,22 @@ static void build_ui() {
   lv_label_set_text(lbl_ver, "v" FW_STR "  Check update"); lv_obj_center(lbl_ver);
 }
 
+static void swatch_done(lv_timer_t *t) { lv_obj_del((lv_obj_t *)t->user_data); lv_timer_del(t); }
+static void color_swatches() {   // 4 s boot strip: red, green, blue, My Melody pink, yellow - shows true panel colours
+  const uint32_t cols[] = {0xFF0000, 0x00FF00, 0x0000FF, 0xF090B0, 0xFFE000};
+  lv_obj_t *c = lv_obj_create(lv_scr_act()); lv_obj_remove_style_all(c);
+  lv_obj_set_size(c, 200, 36); lv_obj_align(c, LV_ALIGN_TOP_MID, 0, 120);
+  for (int i = 0; i < 5; i++) {
+    lv_obj_t *q = lv_obj_create(c); lv_obj_remove_style_all(q); lv_obj_set_size(q, 36, 36); lv_obj_set_pos(q, i * 41, 0);
+    lv_obj_set_style_bg_opa(q, LV_OPA_COVER, 0); lv_obj_set_style_bg_color(q, lv_color_hex(cols[i]), 0);
+  }
+  lv_timer_create(swatch_done, 4000, c);
+}
+
 void setup() {
   I2C_Init(); Backlight_Init(); LCD_Init(); Lvgl_Init();
   build_ui();
+  color_swatches();
   rec_init();
   xTaskCreate(net_task, "net", 12288, NULL, 1, NULL);
 }
@@ -161,7 +177,7 @@ void loop() {
 #ifdef HAVE_MELODY
       lv_anim_del(melody, bob_cb); lv_obj_set_style_translate_y(melody, 0, 0);
       lv_img_set_zoom(melody, recording ? MELODY_ZOOM_REC : MELODY_ZOOM_IDLE);
-      lv_obj_align(melody, LV_ALIGN_TOP_MID, 0, 100);
+      lv_obj_align(melody, LV_ALIGN_TOP_MID, 0, recording ? MELODY_TOP_REC : MELODY_TOP_IDLE);
       if (stt == REC_RECORDING) {
         lv_anim_t a; lv_anim_init(&a); lv_anim_set_var(&a, melody); lv_anim_set_exec_cb(&a, bob_cb);
         lv_anim_set_values(&a, 0, -8); lv_anim_set_time(&a, 600); lv_anim_set_playback_time(&a, 600);
