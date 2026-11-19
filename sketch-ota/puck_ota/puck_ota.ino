@@ -28,8 +28,12 @@
 static char status_txt[96] = "v" FW_STR " booting";
 static volatile bool want_check = false;
 static lv_obj_t *lbl, *lbl_title, *lbl_time, *lbl_stat, *lbl_ver, *bar, *lbl_diag, *rec_btn, *rec_lbl, *melody;
-static lv_obj_t *tv, *dots[4], *lbl_ver_small, *lbl_clock, *lbl_date, *lbl_tsrc, *lbl_info, *rec_list_obj, *lbl_listhdr;
+static lv_obj_t *tv, *dots[5], *lbl_ver_small, *lbl_clock, *lbl_date, *lbl_tsrc, *lbl_info, *rec_list_obj, *lbl_listhdr;
 static lv_obj_t *play_box = NULL;
+#define NPAGES 5   // 0 Recorder, 1 Tauke, 2 Clock, 3 Recordings, 4 Status
+#define PG_LIST 3
+#define PG_STATUS 4
+#include "tauke_ui.h"
 
 static void btn_cb(lv_event_t *e) { want_check = true; }
 
@@ -44,7 +48,7 @@ static void net_task(void *) {
   for (;;) {
     if (want_check) {
       want_check = false;
-      if (rec.state != REC_IDLE) { snprintf(status_txt, sizeof status_txt, "stop recording first"); continue; }
+      if (rec.state != REC_IDLE || tk_state != TK_IDLE) { snprintf(status_txt, sizeof status_txt, "stop recording / Tauke first"); continue; }
       WiFiClientSecure c; c.setCACert(GH_ROOT_CAS);   // TLS validated against pinned roots
       HTTPClient h; h.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS); h.begin(c, String(OTA_BASE) + "/version.txt");
       int code = h.GET(); int remote = code == 200 ? h.getString().toInt() : -1; h.end();
@@ -65,6 +69,7 @@ static void net_task(void *) {
 #define MELODY_TOP_REC 100     // drawn 88x120 spans y=100..220
 #define MELODY_ZOOM_REC 256    // 100%: 88x120 px, bobbing
 static void rec_cb(lv_event_t *e) {
+  if (tk_state != TK_IDLE && tk_state != TK_ERROR) return;   // Tauke is using the mic/speaker
   if (rec.state == REC_IDLE) rec_start();
   else if (rec.state == REC_RECORDING) rec_stop();
 }
@@ -166,7 +171,7 @@ static void act_box_cb(lv_event_t *e) {
   lv_obj_t *m = lv_event_get_current_target(e);
   uint16_t b = lv_msgbox_get_active_btn(m);
   close_box_async(m);
-  if (b == 0) { rec_play(sel_name); if (rec_playing) show_play_box(); }
+  if (b == 0) { if (tk_state == TK_IDLE || tk_state == TK_ERROR) rec_play(sel_name); if (rec_playing) show_play_box(); }
   else if (b == 1) {
     static const char *btns[] = {"Yes, delete", "No", ""};
     lv_obj_t *c = lv_msgbox_create(NULL, "Delete?", sel_name, btns, false);
@@ -221,9 +226,11 @@ static void build_ui() {
   lv_obj_set_style_bg_opa(tv, LV_OPA_TRANSP, 0);
   lv_obj_set_scrollbar_mode(tv, LV_SCROLLBAR_MODE_OFF);
   lv_obj_t *t0 = lv_tileview_add_tile(tv, 0, 0, LV_DIR_RIGHT);
-  lv_obj_t *t1 = lv_tileview_add_tile(tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-  lv_obj_t *t2 = lv_tileview_add_tile(tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-  lv_obj_t *t3 = lv_tileview_add_tile(tv, 3, 0, LV_DIR_LEFT);
+  lv_obj_t *tk = lv_tileview_add_tile(tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+  lv_obj_t *t1 = lv_tileview_add_tile(tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+  lv_obj_t *t2 = lv_tileview_add_tile(tv, 3, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+  lv_obj_t *t3 = lv_tileview_add_tile(tv, 4, 0, LV_DIR_LEFT);
+  tk_build(tk);   // page 1: Tauke voice
 
   // ---------- page 0: recorder (unchanged from v4 except the Check-update button moved to Status) ----------
   lbl_title = lv_label_create(t0); lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_20, 0);
@@ -301,12 +308,12 @@ static void build_ui() {
   lv_label_set_text(lbl_ver, "v" FW_STR "  Check update"); lv_obj_center(lbl_ver);
 
   // ---------- page indicator dots (top layer, inside the round area) ----------
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < NPAGES; i++) {
     dots[i] = lv_obj_create(lv_layer_top()); lv_obj_remove_style_all(dots[i]);
     lv_obj_set_size(dots[i], 8, 8); lv_obj_set_style_radius(dots[i], LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(dots[i], LV_OPA_COVER, 0);
     lv_obj_clear_flag(dots[i], LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(dots[i], LV_ALIGN_TOP_MID, (i - 1) * 16 - 8, 340);
+    lv_obj_align(dots[i], LV_ALIGN_TOP_MID, (i - 2) * 16, 340);
   }
 }
 
@@ -337,8 +344,12 @@ void setup() {
 void loop() {
   static char shown_net[96], shown_stat[96], shown_diag[320], tbuf[16];
   static int last_state = -1, last_page = -1;
-  static uint32_t last_ui = 0, last_slow = 0;
+  static uint32_t last_ui = 0, last_slow = 0, last_tk = 0;
   uint32_t now = millis();
+  if (now - last_tk >= 33) {   // Tauke face + state machine
+    last_tk = now;
+    tk_tick(last_page == 1 || lv_obj_get_scroll_x(tv) / 360 == 1 || (lv_obj_get_scroll_x(tv) + 359) / 360 == 1);
+  }
   if (now - last_ui >= 100) {
     last_ui = now;
     if (strcmp(shown_net, status_txt)) { strcpy(shown_net, status_txt); lv_label_set_text(lbl, shown_net); }
@@ -361,7 +372,7 @@ void loop() {
       bool recording = (stt != REC_IDLE);
       // no page swiping while recording: stray swipes can't interfere
       if (recording) { lv_obj_clear_flag(tv, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_tile_id(tv, 0, 0, LV_ANIM_OFF); }
-      else lv_obj_add_flag(tv, LV_OBJ_FLAG_SCROLLABLE);
+      else if (tk_state != TK_LISTEN) lv_obj_add_flag(tv, LV_OBJ_FLAG_SCROLLABLE);
       if (recording) lv_obj_add_flag(lbl_diag, LV_OBJ_FLAG_HIDDEN); else lv_obj_clear_flag(lbl_diag, LV_OBJ_FLAG_HIDDEN);
 #ifdef HAVE_MELODY
       lv_anim_del(melody, bob_cb); lv_obj_set_style_translate_y(melody, 0, 0);
@@ -376,16 +387,16 @@ void loop() {
       if (stt == REC_IDLE) list_dirty = true;
     }
     // page dots + per-page refresh
-    int page = (lv_obj_get_scroll_x(tv) + 180) / 360; if (page < 0) page = 0; if (page > 3) page = 3;
-    for (int i = 0; i < 4; i++) lv_obj_set_style_bg_color(dots[i], i == page ? lv_color_white() : lv_color_hex(0x4a5a6a), 0);
-    if (page != last_page) { last_page = page; if (page == 2) list_dirty = true; last_slow = 0; }
-    if (page == 2 && (list_dirty || rec.count != list_seen_count)) refresh_list();
+    int page = (lv_obj_get_scroll_x(tv) + 180) / 360; if (page < 0) page = 0; if (page > NPAGES - 1) page = NPAGES - 1;
+    for (int i = 0; i < NPAGES; i++) lv_obj_set_style_bg_color(dots[i], i == page ? lv_color_white() : lv_color_hex(0x4a5a6a), 0);
+    if (page != last_page) { last_page = page; if (page == PG_LIST) list_dirty = true; last_slow = 0; }
+    if (page == PG_LIST && (list_dirty || rec.count != list_seen_count)) refresh_list();
     if (play_box && !rec_playing) { lv_msgbox_close_async(play_box); play_box = NULL; }
   }
   if (now - last_slow >= 1000) {   // 1 Hz: clock, status page
     last_slow = now;
     time_tick();
-    if (last_page == 3) {
+    if (last_page == PG_STATUS) {
       char bt[80], inf[400], ssid[40];
       battery_text(bt, sizeof bt);
       if (WiFi.status() == WL_CONNECTED) {

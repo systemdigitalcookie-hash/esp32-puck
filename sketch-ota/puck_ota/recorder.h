@@ -31,3 +31,14 @@ bool rec_delete(const char *name);
 void rec_play(const char *name);             // plays through ES8311 + speaker pads; call from the UI task
 void rec_play_stop();
 extern volatile bool rec_playing;
+
+// ---- Tauke voice: push-to-talk capture into RAM, and playback of PCM from RAM ----
+// Call start/stop/play from the UI task (they touch I2C codecs).
+bool talk_cap_start(int16_t *buf, uint32_t max_samples);  // 16 kHz mono
+uint32_t talk_cap_stop();                                  // returns samples captured (waits for capture task)
+extern volatile uint32_t talk_cap_n;                       // live sample count
+bool talk_play_start(const int16_t *pcm, uint32_t samples);
+void talk_play_stop();
+extern volatile bool talk_playing;
+extern volatile uint32_t talk_play_pos;                     // samples played so far
+extern volatile int talk_level;                             // 0..100 live level (mic or speaker)

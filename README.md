@@ -28,3 +28,17 @@ FQBN: `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_1
 
 ## Recorder hardware notes
 Dual mic via ES7210 + ES8311 codec/speaker pads; I2S MCLK=2 BCLK=48 WS=38 DIN=39 DOUT=47; I2C SDA=11 SCL=10; microSD SDMMC 4-bit CLK15 CMD14 D0=16 D1=17 D2=12 D3=13; 8 MB PSRAM. Waveshare ESP-IDF example `06_mic_test` and Arduino `06_esp_sr` are the starting points.
+
+## Tauke voice page (v6+)
+Page 2 (swipe left from Recorder). Hold **Hold to talk**, speak, release. The puck POSTs 16 kHz mono PCM over HTTPS to the
+Tauke server, which runs xAI speech-to-text -> Grok chat ("Grok Tauke" persona, short per-device history) -> xAI text-to-speech
+(16 kHz PCM), and plays the answer through the ES8311 speaker output (amp on GPIO9). Face: white rounded head, two black oval
+eyes (idle blink / listening look-up / thinking side-to-side / speaking squish+bob). Errors show in red under the face.
+
+- Server code: `tauke-server/` (Node 20+, no deps), deployed on Railway project `puck-tauke`, service `tauke`:
+  `https://tauke-production.up.railway.app` (`GET /health`, `POST /talk`). Env: `XAI_API_KEY`, `DEVICE_TOKEN`,
+  optional `CHAT_MODEL`, `STT_MODEL`, `TTS_VOICE`, `ALLOWED_DEVICES` (comma list of MACs), `DEVICE_DAILY_LIMIT`, `GLOBAL_DAILY_LIMIT`.
+- Device secret: `sketch-ota/puck_ota/secrets.h` (gitignored) defines `TAUKE_URL` and `TAUKE_TOKEN`. Builds without it show
+  "Tauke not configured". The token is XOR-scrambled in the binary (published firmware is public, so the server also
+  rate-limits and can allow-list device MACs).
+- Test: `tauke-server/test_talk.sh tauke-server/sample.wav` prints transcript + reply and saves `reply.wav`.

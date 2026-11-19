@@ -335,3 +335,96 @@ void rec_play(const char *name) {
 }
 
 void rec_play_stop() { play_stop = true; }
+
+// ---------------- Tauke: push-to-talk capture to RAM / playback from RAM ----------------
+volatile uint32_t talk_cap_n = 0;
+volatile bool talk_playing = false;
+volatile uint32_t talk_play_pos = 0;
+volatile int talk_level = 0;
+static int16_t *tc_buf = nullptr;
+static uint32_t tc_max = 0;
+static volatile bool tc_stop = false, tc_done = true;
+
+static void talk_cap_task(void *) {
+  static int16_t st[CHUNK_FRAMES * 2];
+  int skip = 3;
+  while (!tc_stop) {
+    size_t got = i2s.readBytes((char *)st, sizeof st);
+    if (got < sizeof st) continue;
+    if (skip > 0) { skip--; continue; }
+    int peak = 0;
+    for (int i = 0; i < CHUNK_FRAMES && talk_cap_n < tc_max; i++) {
+      int m = (int)st[2 * i] + (int)st[2 * i + 1];         // sum both mics (= 2x avg, ~+6 dB for speech)
+      if (m > 32767) m = 32767; else if (m < -32768) m = -32768;
+      tc_buf[talk_cap_n++] = (int16_t)m;
+      int a = m < 0 ? -m : m; if (a > peak) peak = a;
+    }
+    talk_level = (int)(sqrtf(peak / 16000.0f) * 100.0f); if (talk_level > 100) talk_level = 100;
+    if (talk_cap_n >= tc_max) break;
+  }
+  i2s.end();
+  talk_level = 0;
+  tc_done = true;
+  vTaskDelete(NULL);
+}
+
+bool talk_cap_start(int16_t *buf, uint32_t max_samples) {
+  if (rec.state != REC_IDLE || rec_playing || talk_playing || !tc_done || !buf) return false;
+  char err[48];
+  if (!mic_open(err, sizeof err)) { snprintf(rec.mic, sizeof rec.mic, "mic: %s", err); return false; }
+  tc_buf = buf; tc_max = max_samples; talk_cap_n = 0; tc_stop = false; tc_done = false;
+  xTaskCreatePinnedToCore(talk_cap_task, "tcap", 6144, NULL, 5, NULL, 0);
+  return true;
+}
+
+uint32_t talk_cap_stop() {
+  tc_stop = true;
+  for (int i = 0; i < 150 && !tc_done; i++) delay(10);
+  return talk_cap_n;
+}
+
+static const int16_t *tp_pcm = nullptr;
+static uint32_t tp_n = 0;
+static volatile bool tp_stop = false;
+
+static void talk_play_task(void *) {
+  const uint32_t CH = 1024;
+  uint32_t i = 0;
+  while (!tp_stop && i < tp_n) {
+    uint32_t n = min<uint32_t>(CH, tp_n - i);
+    int peak = 0;
+    for (uint32_t k = 0; k < n; k += 8) { int a = abs((int)tp_pcm[i + k]); if (a > peak) peak = a; }
+    talk_level = (int)(sqrtf(peak / 20000.0f) * 100.0f); if (talk_level > 100) talk_level = 100;
+    i2s.write((const uint8_t *)(tp_pcm + i), n * 2);
+    i += n; talk_play_pos = i;
+  }
+  static const int16_t zeros[512] = {0};
+  i2s.write((const uint8_t *)zeros, sizeof zeros);   // flush with silence, avoids a click
+  delay(120);
+  digitalWrite(PIN_PA, LOW);
+  i2s.end();
+  talk_level = 0;
+  talk_playing = false;
+  vTaskDelete(NULL);
+}
+
+bool talk_play_start(const int16_t *pcm, uint32_t samples) {
+  if (rec.state != REC_IDLE || rec_playing || talk_playing || !tc_done || !pcm || !samples) return false;
+  pinMode(PIN_PA, OUTPUT); digitalWrite(PIN_PA, LOW);
+  i2s.setPins(PIN_BCK, PIN_WS, PIN_DOUT, PIN_DIN, PIN_MCK);
+  i2s.setTimeout(1000);
+  if (!i2s.begin(I2S_MODE_STD, SR, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO, I2S_STD_SLOT_LEFT)) { put_msg("play: i2s failed"); return false; }
+  if (!dac_h) dac_h = es8311_create(I2C_NUM_0, ES8311_ADDRRES_0);
+  const es8311_clock_config_t clk = { .mclk_inverted = false, .sclk_inverted = false, .mclk_from_mclk_pin = true,
+                                      .mclk_frequency = SR * 256, .sample_frequency = SR };
+  if (!dac_h || es8311_init(dac_h, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16) != ESP_OK ||
+      es8311_voice_volume_set(dac_h, 80, NULL) != ESP_OK || es8311_microphone_config(dac_h, false) != ESP_OK) {
+    i2s.end(); put_msg("play: es8311 failed"); return false;
+  }
+  digitalWrite(PIN_PA, HIGH);
+  tp_pcm = pcm; tp_n = samples; tp_stop = false; talk_play_pos = 0; talk_playing = true;
+  xTaskCreatePinnedToCore(talk_play_task, "tplay", 4096, NULL, 4, NULL, 0);
+  return true;
+}
+
+void talk_play_stop() { tp_stop = true; }

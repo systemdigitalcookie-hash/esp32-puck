@@ -1,0 +1,9 @@
+{
+  "name": "puck-tauke",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Voice bridge: puck audio -> xAI STT -> Grok (Tauke persona) -> xAI TTS (16 kHz PCM)",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=20" }
+}
