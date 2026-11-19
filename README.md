@@ -42,3 +42,14 @@ eyes (idle blink / listening look-up / thinking side-to-side / speaking squish+b
   "Tauke not configured". The token is XOR-scrambled in the binary (published firmware is public, so the server also
   rate-limits and can allow-list device MACs).
 - Test: `tauke-server/test_talk.sh tauke-server/sample.wav` prints transcript + reply and saves `reply.wav`.
+
+### v7: Real Tauke mode + Notion-style UI
+- Tauke page has a mode pill at the top: **Quick** (fast Grok chat, `/talk`) or **Real Tauke** (filled pill + eyebrows on the face;
+  `/ask` fires the Grok Bot routine webhook, the puck polls `/result/<id>` every 2 s for up to 3 min, tap to cancel). Mode is saved in NVS.
+  In Quick mode, saying "ask Tauke ..." (also Towkay / Tao K / Talk ...) is routed to the real Tauke automatically by the server.
+- Server env for the real route: `TAUKE_WEBHOOK_URL`, `TAUKE_WEBHOOK_KEY` (missing -> "Real Tauke not set up"). The routine POSTs
+  `{request_id, reply}` to `/callback` with `Authorization: Bearer <callback_token>`; the reply is converted to speech, cached, and added to the
+  device's chat history.
+- UI: white background, #37352F text, thin #E9E9E7 dividers, outline buttons, red only for record/stop. Recorder character = animated headset
+  GIF (`headset_src.gif` -> `tools_gif2lvgl.py` -> `headset_img.h`, 60 frames 150 px LVGL indexed 2-bit, gitignored personal asset).
+  Mock: `layout_mock_v7.png` (`tools_mock_v7.py`).

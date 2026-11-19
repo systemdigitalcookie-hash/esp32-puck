@@ -4,7 +4,11 @@
 //   200 -> body: 16 kHz mono s16le PCM (Content-Type audio/pcm, Content-Length set)
 //          headers X-Transcript, X-Reply (percent-encoded UTF-8)
 //   errors -> JSON {error}, with X-Error header (short, ASCII) for the device screen.
-// Env: XAI_API_KEY, DEVICE_TOKEN (required); CHAT_MODEL, STT_MODEL, TTS_VOICE (optional).
+// POST /ask  same body/headers as /talk, always routed to the REAL Grok Tauke routine (webhook).
+//   202 JSON {request_id, transcript} + X-Request-Id/X-Transcript. /talk also returns this 202 when the transcript starts with "ask Tauke".
+// GET /result/<request_id>  202 pending | 200 PCM + X-Reply | 504 after 3 min | 502 X-Error
+// POST /callback  {request_id, reply} with Authorization: Bearer <per-request callback_token> (sent by the routine)
+// Env: XAI_API_KEY, DEVICE_TOKEN (required); TAUKE_WEBHOOK_URL, TAUKE_WEBHOOK_KEY (real Tauke); CHAT_MODEL, STT_MODEL, TTS_VOICE (optional).
 const http = require('http');
 const crypto = require('crypto');
 
@@ -120,32 +124,100 @@ function sendErr(res, status, short) {
 
 const enc = (s) => encodeURIComponent(s);
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://x');
-  if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ ok: true, service: 'puck-tauke', chat: CHAT_MODEL, stt: STT_MODEL, voice: TTS_VOICE }));
+// ---------------- Real Tauke (Grok Bot routine via webhook) ----------------
+const WEBHOOK_URL = process.env.TAUKE_WEBHOOK_URL;
+const WEBHOOK_KEY = process.env.TAUKE_WEBHOOK_KEY;
+const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://tauke-production.up.railway.app').replace(/\/$/, '');
+const REAL_TIMEOUT = 3 * 60 * 1000;
+const pending = new Map(); // request_id -> {dev, text, cbToken, t, status: 'waiting'|'tts'|'ready'|'error', reply, pcm, err}
+// "ask Tauke ..." (STT may hear Talk / Towkay / Tokay ...)
+const ASK_RE = /^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:ask|asked|asks)\s+(?:the\s+)?(?:real\s+)?(?:tauke|towkay|towkey|taukay|toukay|tokay|tow\s*kay|tau\s*ke|tao\s*k(?:e|ay)?|dao\s*ke|tok\s*kay|toke|talk|tuck(?:ay|ey)?)\b[\s,.:;!?-]*/i;
+
+function addHistory(dev, user, assistant) {
+  const now = Date.now();
+  let h = history.get(dev);
+  if (!h || now - h.t > HIST_TTL) h = { msgs: [], t: now };
+  h.msgs.push({ role: 'user', content: user }, { role: 'assistant', content: assistant });
+  h.msgs = h.msgs.slice(-HIST_TURNS); h.t = now;
+  history.set(dev, h);
+}
+
+setInterval(() => { const now = Date.now(); for (const [k, v] of pending) if (now - v.t > 15 * 60 * 1000) pending.delete(k); }, 60000).unref();
+
+async function fireWebhook(dev, text) {
+  if (!WEBHOOK_URL || !WEBHOOK_KEY) throw new HttpErr(503, 'Real Tauke not set up');
+  const request_id = crypto.randomUUID();
+  const cbToken = crypto.randomBytes(24).toString('hex');
+  const r = await fetch(WEBHOOK_URL, {
+    method: 'POST', headers: { Authorization: `Bearer ${WEBHOOK_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, request_id, callback_url: `${PUBLIC_URL}/callback`, callback_token: cbToken }),
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!r.ok) {
+    const body = (await r.text()).slice(0, 300);
+    console.error(`[webhook] ${r.status} ${body}`);
+    throw new HttpErr(502, r.status === 400 ? 'Tauke routine disabled' : r.status === 401 ? 'Tauke webhook key rejected' : `Tauke webhook error ${r.status}`);
   }
-  if (url.pathname !== '/talk') return sendErr(res, 404, 'not found');
-  if (req.method !== 'POST') return sendErr(res, 405, 'POST only');
-  if (!tokenOk(req)) return sendErr(res, 401, 'bad device token');
-  if (!KEY) return sendErr(res, 500, 'server has no XAI key');
+  let run = ''; try { run = (await r.json()).runUuid || ''; } catch {}
+  pending.set(request_id, { dev, text, cbToken, t: Date.now(), status: 'waiting' });
+  console.log(`[webhook] dev=${dev} req=${request_id} run=${run} | "${text}"`);
+  return request_id;
+}
 
-  const dev = String(req.headers['x-device-id'] || 'default').slice(0, 64).toUpperCase();
-  if (ALLOWED.length && !ALLOWED.includes(dev)) { console.warn(`[talk] rejected device ${dev}`); return sendErr(res, 403, 'device not allowed'); }
-  if (!allowUse(dev)) return sendErr(res, 429, 'daily limit reached');
-  const t0 = Date.now();
+function sendReal(res, request_id, transcript) {
+  const b = JSON.stringify({ request_id, transcript, mode: 'real' });
+  res.writeHead(202, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(b),
+    'X-Request-Id': request_id, 'X-Transcript': enc(transcript).slice(0, 1500), 'X-Mode': 'real' });
+  res.end(b);
+}
+
+async function readBody(req, max) {
   const chunks = []; let n = 0;
-  try {
-    for await (const c of req) { n += c.length; if (n > MAX_BODY) throw new HttpErr(413, 'audio too long'); chunks.push(c); }
-    let audio = Buffer.concat(chunks);
-    const isWav = audio.length > 44 && audio.toString('ascii', 0, 4) === 'RIFF';
-    const pcmLen = isWav ? audio.length - 44 : audio.length;
-    if (pcmLen < SR * 2 * 0.3) throw new HttpErr(400, 'audio too short');
-    const wavBuf = isWav ? audio : wav(audio.subarray(0, audio.length & ~1));
+  for await (const c of req) { n += c.length; if (n > max) throw new HttpErr(413, 'body too large'); chunks.push(c); }
+  return Buffer.concat(chunks);
+}
 
+async function readAudio(req) {
+  const audio = await readBody(req, MAX_BODY);
+  const isWav = audio.length > 44 && audio.toString('ascii', 0, 4) === 'RIFF';
+  const pcmLen = isWav ? audio.length - 44 : audio.length;
+  if (pcmLen < SR * 2 * 0.3) throw new HttpErr(400, 'audio too short');
+  return { wavBuf: isWav ? audio : wav(audio.subarray(0, audio.length & ~1)), pcmLen };
+}
+
+function deviceGate(req, res) {   // returns dev id, or null after sending an error
+  if (!tokenOk(req)) { sendErr(res, 401, 'bad device token'); return null; }
+  const dev = String(req.headers['x-device-id'] || 'default').slice(0, 64).toUpperCase();
+  if (ALLOWED.length && !ALLOWED.includes(dev)) { console.warn(`rejected device ${dev}`); sendErr(res, 403, 'device not allowed'); return null; }
+  return dev;
+}
+
+function fail(res, e, tag) {
+  const status = e.status || (e.name === 'TimeoutError' ? 504 : 500);
+  const short = e.short || (e.name === 'TimeoutError' ? 'upstream timeout' : 'server error');
+  if (!e.status) console.error(`[${tag}]`, e);
+  if (!res.headersSent) sendErr(res, status, short); else res.end();
+}
+
+async function handleTalk(req, res, forceReal) {
+  if (req.method !== 'POST') return sendErr(res, 405, 'POST only');
+  const dev = deviceGate(req, res); if (!dev) return;
+  if (!KEY) return sendErr(res, 500, 'server has no XAI key');
+  if (forceReal && !(WEBHOOK_URL && WEBHOOK_KEY)) return sendErr(res, 503, 'Real Tauke not set up');
+  if (!allowUse(dev)) return sendErr(res, 429, 'daily limit reached');
+  const tag = forceReal ? 'ask' : 'talk';
+  const t0 = Date.now();
+  try {
+    const { wavBuf, pcmLen } = await readAudio(req);
     const text = await stt(wavBuf);
     const t1 = Date.now();
+    const m = text.match(ASK_RE);
+    if (forceReal || (m && WEBHOOK_URL && WEBHOOK_KEY)) {   // Real Tauke route
+      if (!text) throw new HttpErr(422, "Didn't catch that, try again");
+      const q = (m ? text.slice(m[0].length) : text).trim() || text;
+      const id = await fireWebhook(dev, q);
+      return sendReal(res, id, text);
+    }
     const reply = text ? await chat(dev, text) : "Sorry boss, I didn't catch that. Try again?";
     const t2 = Date.now();
     const pcm = await tts(reply);
@@ -154,15 +226,61 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, {
       'Content-Type': 'audio/pcm', 'Content-Length': pcm.length,
       'X-Transcript': enc(text).slice(0, 1500), 'X-Reply': enc(reply).slice(0, 3000),
-      'X-Sample-Rate': String(SR), 'X-Timing': `${t1 - t0},${t2 - t1},${t3 - t2}`,
+      'X-Sample-Rate': String(SR), 'X-Timing': `${t1 - t0},${t2 - t1},${t3 - t2}`, 'X-Mode': 'quick',
     });
     res.end(pcm);
-  } catch (e) {
-    const status = e.status || (e.name === 'TimeoutError' ? 504 : 500);
-    const short = e.short || (e.name === 'TimeoutError' ? 'xAI timeout' : 'server error');
-    if (!e.status) console.error('[talk]', e);
-    if (!res.headersSent) sendErr(res, status, short); else res.end();
+  } catch (e) { fail(res, e, tag); }
+}
+
+async function handleCallback(req, res) {
+  if (req.method !== 'POST') return sendErr(res, 405, 'POST only');
+  try {
+    let j; try { j = JSON.parse((await readBody(req, 64 * 1024)).toString('utf8')); } catch { throw new HttpErr(400, 'bad json'); }
+    const p = pending.get(String(j.request_id || ''));
+    const a = req.headers['authorization'] || '';
+    const got = Buffer.from(a.startsWith('Bearer ') ? a.slice(7) : '');
+    if (!p || got.length !== p.cbToken.length || !crypto.timingSafeEqual(got, Buffer.from(p.cbToken))) throw new HttpErr(401, 'bad callback');
+    if (p.status !== 'waiting') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"ok":true,"duplicate":true}'); }
+    const reply = String(j.reply || '').replace(/[*_#`>]/g, '').trim().slice(0, 4000) || 'Tauke sent an empty reply.';
+    p.reply = reply; p.status = 'tts';
+    addHistory(p.dev, p.text, `[Real Tauke said] ${reply}`);
+    console.log(`[callback] req=${j.request_id} after ${((Date.now() - p.t) / 1000).toFixed(1)}s -> "${reply.slice(0, 200)}"`);
+    res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}');
+    try { p.pcm = await tts(reply); p.status = 'ready'; }
+    catch (e) { p.status = 'error'; p.err = e.short || 'tts failed'; console.error('[callback tts]', e.message); }
+  } catch (e) { fail(res, e, 'callback'); }
+}
+
+function handleResult(req, res, id) {
+  if (req.method !== 'GET') return sendErr(res, 405, 'GET only');
+  const dev = deviceGate(req, res); if (!dev) return;
+  const p = pending.get(id);
+  if (!p || p.dev !== dev) return sendErr(res, 404, 'unknown request');
+  const age = Date.now() - p.t;
+  if (p.status === 'ready') {
+    res.writeHead(200, { 'Content-Type': 'audio/pcm', 'Content-Length': p.pcm.length, 'X-Reply': enc(p.reply).slice(0, 3000),
+      'X-Transcript': enc(p.text).slice(0, 1500), 'X-Sample-Rate': String(SR), 'X-Mode': 'real' });
+    return res.end(p.pcm);
   }
+  if (p.status === 'error') { res.setHeader('X-Reply', enc(p.reply || '').slice(0, 3000)); return sendErr(res, 502, p.err); }
+  if (age > REAL_TIMEOUT && p.status === 'waiting') return sendErr(res, 504, 'Tauke took too long');
+  const b = JSON.stringify({ status: p.status, elapsed: Math.round(age / 1000) });
+  res.writeHead(202, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(b), 'Retry-After': '2' });
+  res.end(b);
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://x');
+  if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: true, service: 'puck-tauke', chat: CHAT_MODEL, stt: STT_MODEL, voice: TTS_VOICE, real_tauke: !!(WEBHOOK_URL && WEBHOOK_KEY) }));
+  }
+  if (url.pathname === '/talk') return handleTalk(req, res, false);
+  if (url.pathname === '/ask') return handleTalk(req, res, true);
+  if (url.pathname === '/callback') return handleCallback(req, res);
+  const m = url.pathname.match(/^\/result\/([0-9a-f-]{36})$/);
+  if (m) return handleResult(req, res, m[1]);
+  return sendErr(res, 404, 'not found');
 });
 server.requestTimeout = 120000;
-server.listen(PORT, () => console.log(`puck-tauke on :${PORT} chat=${CHAT_MODEL} stt=${STT_MODEL} voice=${TTS_VOICE} token=${TOKEN ? 'set' : 'MISSING'}`));
+server.listen(PORT, () => console.log(`puck-tauke on :${PORT} chat=${CHAT_MODEL} stt=${STT_MODEL} voice=${TTS_VOICE} token=${TOKEN ? 'set' : 'MISSING'} realTauke=${WEBHOOK_URL && WEBHOOK_KEY ? 'set' : 'not set'}`));

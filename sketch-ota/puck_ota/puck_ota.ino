@@ -8,10 +8,11 @@
 #include <WiFiClientSecure.h>
 #include <HTTPUpdate.h>
 #include "recorder.h"
-#if __has_include("melody_img.h")
-#include "melody_img.h"   // optional personal asset: extern const lv_img_dsc_t melody_img;
-#define HAVE_MELODY 1
+#if __has_include("headset_img.h")
+#include "headset_img.h"   // personal asset (gitignored): animated headset character, LVGL indexed 2-bit frames
+#define HAVE_HEADSET 1
 #endif
+#include "ui_style.h"
 
 #include "version.h"
 #include "certs.h"
@@ -27,7 +28,8 @@
 
 static char status_txt[96] = "v" FW_STR " booting";
 static volatile bool want_check = false;
-static lv_obj_t *lbl, *lbl_title, *lbl_time, *lbl_stat, *lbl_ver, *bar, *lbl_diag, *rec_btn, *rec_lbl, *melody;
+static lv_obj_t *lbl, *lbl_time, *lbl_stat, *lbl_ver, *bar, *rec_btn, *rec_icon, *hs_img = NULL;
+static int hs_frame = 0;
 static lv_obj_t *tv, *dots[5], *lbl_ver_small, *lbl_clock, *lbl_date, *lbl_tsrc, *lbl_info, *rec_list_obj, *lbl_listhdr;
 static lv_obj_t *play_box = NULL;
 #define NPAGES 5   // 0 Recorder, 1 Tauke, 2 Clock, 3 Recordings, 4 Status
@@ -44,7 +46,7 @@ static void net_task(void *) {
   if (!wm.autoConnect("Puck-Setup")) { snprintf(status_txt, sizeof status_txt, "WiFi failed"); vTaskDelete(NULL); }
   configTime(0, 0, "pool.ntp.org", "time.google.com");   // cert validation needs correct time
   for (int i = 0; i < 40 && time(nullptr) < 1700000000; i++) delay(250);
-  snprintf(status_txt, sizeof status_txt, "v%d  %s", FW_VERSION, WiFi.localIP().toString().c_str());
+  snprintf(status_txt, sizeof status_txt, "%s", WiFi.localIP().toString().c_str());
   for (;;) {
     if (want_check) {
       want_check = false;
@@ -58,23 +60,19 @@ static void net_task(void *) {
         httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
         httpUpdate.update(c, String(OTA_BASE) + "/firmware.bin");
         snprintf(status_txt, sizeof status_txt, "update failed");
-      } else snprintf(status_txt, sizeof status_txt, "v%d up to date (http %d)", FW_VERSION, code);
+      } else if (code == 200) snprintf(status_txt, sizeof status_txt, "Up to date");
+      else snprintf(status_txt, sizeof status_txt, "Update check failed (%d)", code);
     }
     vTaskDelay(pdMS_TO_TICKS(200));
   }
 }
 
-#define MELODY_ZOOM_IDLE 170   // ~66%: 58x80 px, static
-#define MELODY_TOP_IDLE 78     // box top; drawn 58x80 spans y=98..178
-#define MELODY_TOP_REC 100     // drawn 88x120 spans y=100..220
-#define MELODY_ZOOM_REC 256    // 100%: 88x120 px, bobbing
 static void rec_cb(lv_event_t *e) {
   if (tk_state != TK_IDLE && tk_state != TK_ERROR) return;   // Tauke is using the mic/speaker
   if (rec.state == REC_IDLE) rec_start();
   else if (rec.state == REC_RECORDING) rec_stop();
 }
 
-static void bob_cb(void *o, int32_t v) { lv_obj_set_style_translate_y((lv_obj_t *)o, v, 0); }
 
 static void fmt_dur(char *out, size_t n, uint32_t s) {
   if (s >= 3600) snprintf(out, n, "%luh%02lum", (unsigned long)(s / 3600), (unsigned long)((s % 3600) / 60));
@@ -125,8 +123,8 @@ static void time_tick() {
   if (now > (time_t)EPOCH_2026) {
     struct tm t; localtime_r(&now, &t);
     strftime(tb, sizeof tb, "%H:%M", &t); strftime(db, sizeof db, "%a, %d %b %Y", &t);
-    snprintf(sb, sizeof sb, "%s | Kuala Lumpur (UTC+8)", time_src);
-  } else { strcpy(tb, "--:--"); strcpy(db, "waiting for time"); strcpy(sb, "needs Wi-Fi once"); }
+    snprintf(sb, sizeof sb, "Kuala Lumpur");
+  } else { strcpy(tb, "--:--"); strcpy(db, ""); strcpy(sb, "Needs Wi-Fi once"); }
   lv_label_set_text(lbl_clock, tb); lv_label_set_text(lbl_date, db); lv_label_set_text(lbl_tsrc, sb);
 }
 
@@ -158,7 +156,7 @@ static void close_box_async(lv_obj_t *m) { lv_msgbox_close_async(m); }
 static void play_box_cb(lv_event_t *e) { rec_play_stop(); close_box_async(lv_event_get_current_target(e)); play_box = NULL; }
 static void show_play_box() {
   static const char *btns[] = {"Stop", ""};
-  play_box = lv_msgbox_create(NULL, "Playing", sel_name, btns, false);
+  play_box = lv_msgbox_create(NULL, "Playing", sel_name, btns, false); ui_style_msgbox(play_box);
   lv_obj_set_width(play_box, 200); lv_obj_center(play_box);
   lv_obj_add_event_cb(play_box, play_box_cb, LV_EVENT_VALUE_CHANGED, NULL);
 }
@@ -174,7 +172,7 @@ static void act_box_cb(lv_event_t *e) {
   if (b == 0) { if (tk_state == TK_IDLE || tk_state == TK_ERROR) rec_play(sel_name); if (rec_playing) show_play_box(); }
   else if (b == 1) {
     static const char *btns[] = {"Yes, delete", "No", ""};
-    lv_obj_t *c = lv_msgbox_create(NULL, "Delete?", sel_name, btns, false);
+    lv_obj_t *c = lv_msgbox_create(NULL, "Delete?", sel_name, btns, false); ui_style_msgbox(c);
     lv_obj_set_width(c, 210); lv_obj_center(c);
     lv_obj_add_event_cb(c, del_box_cb, LV_EVENT_VALUE_CHANGED, NULL);
   }
@@ -184,7 +182,7 @@ static void row_cb(lv_event_t *e) {
   if (i < 0 || i >= nfiles) return;
   strncpy(sel_name, files[i].name, 23); sel_name[23] = 0;
   static const char *btns[] = {"Play", "Delete", "Close", ""};
-  lv_obj_t *m = lv_msgbox_create(NULL, sel_name, rec.state == REC_IDLE ? "Choose action" : "Stop recording first", btns, false);
+  lv_obj_t *m = lv_msgbox_create(NULL, sel_name, rec.state == REC_IDLE ? "" : "Stop recording first", btns, false); ui_style_msgbox(m);
   lv_obj_set_width(m, 210); lv_obj_center(m);
   lv_obj_add_event_cb(m, act_box_cb, LV_EVENT_VALUE_CHANGED, NULL);
 }
@@ -193,148 +191,152 @@ static void refresh_list() {
   if (rec.state != REC_IDLE) return;
   nfiles = rec_list(files, 40);
   lv_obj_clean(rec_list_obj);
-  if (nfiles == 0) { lv_list_add_text(rec_list_obj, "No recordings yet"); }
+  if (nfiles == 0) {
+    lv_obj_t *e = lv_list_add_text(rec_list_obj, "No recordings yet");
+    lv_obj_set_style_bg_opa(e, LV_OPA_TRANSP, 0); lv_obj_set_style_text_color(e, lv_color_hex(C_GREY), 0);
+    lv_obj_set_style_text_align(e, LV_TEXT_ALIGN_CENTER, 0);
+  }
   for (int i = 0; i < nfiles; i++) {
     char row[64], d[16];
     uint32_t secs = files[i].bytes > 44 ? (files[i].bytes - 44) / 32000 : 0;
     fmt_dur(d, sizeof d, secs);
-    snprintf(row, sizeof row, "%.8s  %s  %.1fMB", files[i].name, d, files[i].bytes / 1048576.0f);
+    int num = 0; sscanf(files[i].name, "rec_%d", &num);
+    snprintf(row, sizeof row, "Recording %d    %s", num, d);
     lv_obj_t *b = lv_list_add_btn(rec_list_obj, NULL, row);
+    lv_obj_set_style_bg_color(b, lv_color_hex(C_BG), 0); lv_obj_set_style_bg_color(b, lv_color_hex(C_PRESS), LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(b, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_style_border_side(b, LV_BORDER_SIDE_BOTTOM, 0); lv_obj_set_style_border_color(b, lv_color_hex(C_DIV), 0);
+    lv_obj_set_style_border_width(b, 1, 0); lv_obj_set_style_pad_ver(b, 12, 0);
     lv_obj_add_event_cb(b, row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
   }
   list_seen_count = rec.count;
 }
 
-// ================= UI =================
-static lv_obj_t *mk_label(lv_obj_t *p, const lv_font_t *f, lv_color_t c, int w) {
-  lv_obj_t *l = lv_label_create(p);
-  lv_obj_set_style_text_font(l, f, 0); lv_obj_set_style_text_color(l, c, 0);
-  lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP); lv_obj_set_width(l, w);
-  lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
-  return l;
+// ================= UI (v7: Notion-inspired, minimal, light) =================
+static void bat_short(char *out, size_t n) {
+  uint16_t st, mv, soc, cur_raw;
+  if (!bq_word(0x0A, &st) || !bq_word(0x08, &mv)) { snprintf(out, n, "unknown"); return; }
+  if (!(st & (1u << 3)) || mv < 2500) { snprintf(out, n, "USB power"); return; }
+  bq_word(0x2C, &soc); bq_word(0x0C, &cur_raw);
+  int cur = cur_raw < 0x8000 ? cur_raw : (int)cur_raw - 65536;
+  snprintf(out, n, "%u%%%s", soc, cur > 20 ? " charging" : "");
+}
+
+static void rec_show_state(int stt) {
+  bool recording = stt == REC_RECORDING;
+  // idle: red dot; recording: red stop square
+  lv_obj_set_size(rec_icon, recording ? 18 : 22, recording ? 18 : 22);
+  lv_obj_set_style_radius(rec_icon, recording ? 3 : LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(rec_icon, lv_color_hex(stt == REC_FINALIZING ? C_LINE : C_RED), 0);
+  lv_obj_center(rec_icon);
+  if (recording) lv_obj_clear_flag(bar, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_style_text_color(lbl_time, lv_color_hex(recording ? C_TEXT : C_GREY), 0);
+}
+
+// status-page row: grey key on the left, value on the right, thin divider below
+static lv_obj_t *st_val[5];
+static void status_row(lv_obj_t *p, int i, const char *key) {
+  int y = 70 + i * 34;
+  lv_obj_t *k = ui_label(p, &lv_font_montserrat_14, C_GREY, 0, key);
+  lv_obj_align(k, LV_ALIGN_TOP_MID, -56, y);
+  st_val[i] = ui_label(p, &lv_font_montserrat_14, C_TEXT, 130, "");
+  lv_label_set_long_mode(st_val[i], LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(st_val[i], LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_align(st_val[i], LV_ALIGN_TOP_MID, 46, y);
+  if (i < 4) ui_divider(p, 230, y + 26);
 }
 
 static void build_ui() {
+  ui_styles_init();
   lv_obj_t *scr = lv_scr_act();
   lv_obj_clean(scr);
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x101820), 0);
-  lv_obj_set_style_text_color(scr, lv_color_white(), 0);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_text_color(scr, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(scr, &lv_font_montserrat_14, 0);
   lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
   tv = lv_tileview_create(scr);
   lv_obj_set_size(tv, 360, 360); lv_obj_set_pos(tv, 0, 0);
-  lv_obj_set_style_bg_opa(tv, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_bg_color(tv, lv_color_hex(C_BG), 0); lv_obj_set_style_bg_opa(tv, LV_OPA_COVER, 0);
   lv_obj_set_scrollbar_mode(tv, LV_SCROLLBAR_MODE_OFF);
   lv_obj_t *t0 = lv_tileview_add_tile(tv, 0, 0, LV_DIR_RIGHT);
   lv_obj_t *tk = lv_tileview_add_tile(tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
   lv_obj_t *t1 = lv_tileview_add_tile(tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
   lv_obj_t *t2 = lv_tileview_add_tile(tv, 3, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
   lv_obj_t *t3 = lv_tileview_add_tile(tv, 4, 0, LV_DIR_LEFT);
-  tk_build(tk);   // page 1: Tauke voice
 
-  // ---------- page 0: recorder (unchanged from v4 except the Check-update button moved to Status) ----------
-  lbl_title = lv_label_create(t0); lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_20, 0);
-  lv_label_set_text(lbl_title, "Meeting Recorder"); lv_obj_align(lbl_title, LV_ALIGN_TOP_MID, 0, 22);
-
-  lbl_time = lv_label_create(t0); lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_28, 0);
-  lv_label_set_text(lbl_time, "00:00"); lv_obj_align(lbl_time, LV_ALIGN_TOP_MID, 0, 50);
-
-  bar = lv_bar_create(t0); lv_obj_set_size(bar, 200, 10); lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 88);
-  lv_bar_set_range(bar, 0, 100); lv_bar_set_value(bar, 0, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(bar, lv_color_hex(0x334455), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(bar, lv_color_hex(0x30d070), LV_PART_INDICATOR);
-
-  lbl_diag = lv_label_create(t0); lv_obj_set_style_text_font(lbl_diag, &lv_font_montserrat_12, 0);
-  lv_label_set_long_mode(lbl_diag, LV_LABEL_LONG_WRAP); lv_obj_set_size(lbl_diag, 230, 46);
-  lv_obj_set_style_text_align(lbl_diag, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_color(lbl_diag, lv_color_hex(0xc8d4e0), 0);
-  lv_label_set_text(lbl_diag, ""); lv_obj_align(lbl_diag, LV_ALIGN_TOP_MID, 0, 182);
-
-#ifdef HAVE_MELODY
-  melody = lv_img_create(t0); lv_img_set_src(melody, &melody_img);
-  lv_obj_set_size(melody, 88, 120);
-  lv_img_set_zoom(melody, MELODY_ZOOM_IDLE);
-  lv_obj_align(melody, LV_ALIGN_TOP_MID, 0, MELODY_TOP_IDLE);
+  // ---------- page 0: recorder ----------
+  ui_title(t0, "Recorder");
+#ifdef HAVE_HEADSET
+  hs_img = lv_img_create(t0); lv_img_set_src(hs_img, &headset_frames[0]);
+  lv_obj_align(hs_img, LV_ALIGN_TOP_MID, 0, 60);
 #endif
-
-  rec_btn = lv_btn_create(t0); lv_obj_set_size(rec_btn, 58, 58); lv_obj_align(rec_btn, LV_ALIGN_TOP_MID, 0, 232);
+  lbl_time = ui_label(t0, &lv_font_montserrat_28, C_GREY, 0, "00:00");
+  lv_obj_align(lbl_time, LV_ALIGN_TOP_MID, 0, 212);
+  bar = lv_bar_create(t0); lv_obj_set_size(bar, 110, 3); lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 250);
+  lv_bar_set_range(bar, 0, 100); lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(C_DIV), LV_PART_MAIN); lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(C_TEXT), LV_PART_INDICATOR);
+  lv_obj_set_style_radius(bar, 2, LV_PART_MAIN); lv_obj_set_style_radius(bar, 2, LV_PART_INDICATOR);
+  rec_btn = ui_btn(t0, 54, 54, "", NULL);
   lv_obj_set_style_radius(rec_btn, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(rec_btn, lv_color_hex(0xd02030), 0);
+  lv_obj_align(rec_btn, LV_ALIGN_TOP_MID, 0, 260);
   lv_obj_add_event_cb(rec_btn, rec_cb, LV_EVENT_CLICKED, NULL);
-  rec_lbl = lv_label_create(rec_btn); lv_obj_set_style_text_font(rec_lbl, &lv_font_montserrat_16, 0);
-  lv_label_set_text(rec_lbl, "REC"); lv_obj_center(rec_lbl);
+  rec_icon = lv_obj_create(rec_btn); lv_obj_remove_style_all(rec_icon);
+  lv_obj_set_style_bg_opa(rec_icon, LV_OPA_COVER, 0); lv_obj_clear_flag(rec_icon, LV_OBJ_FLAG_CLICKABLE);
+  lbl_stat = ui_label(t0, &lv_font_montserrat_12, C_GREY, 200, "");
+  lv_label_set_long_mode(lbl_stat, LV_LABEL_LONG_DOT);
+  lv_obj_align(lbl_stat, LV_ALIGN_TOP_MID, 0, 320);
+  rec_show_state(REC_IDLE);
 
-  lbl_stat = lv_label_create(t0); lv_obj_set_style_text_font(lbl_stat, &lv_font_montserrat_14, 0);
-  lv_label_set_long_mode(lbl_stat, LV_LABEL_LONG_CLIP); lv_obj_set_width(lbl_stat, 230);
-  lv_obj_set_style_text_align(lbl_stat, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_text(lbl_stat, ""); lv_obj_align(lbl_stat, LV_ALIGN_TOP_MID, 0, 296);
+  // ---------- page 1: Tauke voice ----------
+  tk_build(tk);
 
-  lbl_ver_small = lv_label_create(t0); lv_obj_set_style_text_font(lbl_ver_small, &lv_font_montserrat_12, 0);
-  lv_obj_set_style_text_color(lbl_ver_small, lv_color_hex(0x7f90a0), 0);
-  lv_label_set_text(lbl_ver_small, "v" FW_STR "  < swipe >"); lv_obj_align(lbl_ver_small, LV_ALIGN_TOP_MID, 0, 316);
+  // ---------- page 2: clock ----------
+  lbl_clock = ui_label(t1, &lv_font_montserrat_48, C_TEXT, 260, "--:--");
+  lv_obj_align(lbl_clock, LV_ALIGN_TOP_MID, 0, 122);
+  lbl_date = ui_label(t1, &lv_font_montserrat_16, C_TEXT, 260, "");
+  lv_obj_align(lbl_date, LV_ALIGN_TOP_MID, 0, 186);
+  lbl_tsrc = ui_label(t1, &lv_font_montserrat_12, C_GREY, 240, "");
+  lv_obj_align(lbl_tsrc, LV_ALIGN_TOP_MID, 0, 212);
 
-  // ---------- page 1: clock ----------
-  lbl_clock = mk_label(t1, &lv_font_montserrat_48, lv_color_white(), 260);
-  lv_label_set_text(lbl_clock, "--:--"); lv_obj_align(lbl_clock, LV_ALIGN_TOP_MID, 0, 110);
-  lbl_date = mk_label(t1, &lv_font_montserrat_20, lv_color_hex(0xc8d4e0), 260);
-  lv_label_set_text(lbl_date, ""); lv_obj_align(lbl_date, LV_ALIGN_TOP_MID, 0, 180);
-  lbl_tsrc = mk_label(t1, &lv_font_montserrat_12, lv_color_hex(0x7f90a0), 240);
-  lv_label_set_text(lbl_tsrc, ""); lv_obj_align(lbl_tsrc, LV_ALIGN_TOP_MID, 0, 225);
-
-  // ---------- page 2: recordings ----------
-  lbl_listhdr = lv_label_create(t2); lv_obj_set_style_text_font(lbl_listhdr, &lv_font_montserrat_20, 0);
-  lv_label_set_text(lbl_listhdr, "Recordings"); lv_obj_align(lbl_listhdr, LV_ALIGN_TOP_MID, 0, 22);
-  rec_list_obj = lv_list_create(t2); lv_obj_set_size(rec_list_obj, 240, 220); lv_obj_align(rec_list_obj, LV_ALIGN_TOP_MID, 0, 56);
-  lv_obj_set_style_bg_color(rec_list_obj, lv_color_hex(0x1b2733), 0);
+  // ---------- page 3: recordings ----------
+  lbl_listhdr = ui_title(t2, "Recordings");
+  ui_divider(t2, 220, 62);
+  rec_list_obj = lv_list_create(t2); lv_obj_set_size(rec_list_obj, 236, 236); lv_obj_align(rec_list_obj, LV_ALIGN_TOP_MID, 0, 66);
+  lv_obj_set_style_bg_color(rec_list_obj, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_border_width(rec_list_obj, 0, 0); lv_obj_set_style_radius(rec_list_obj, 0, 0);
+  lv_obj_set_style_pad_all(rec_list_obj, 0, 0);
   lv_obj_set_style_text_font(rec_list_obj, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(rec_list_obj, lv_color_white(), 0);
+  lv_obj_set_style_text_color(rec_list_obj, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_scrollbar_mode(rec_list_obj, LV_SCROLLBAR_MODE_OFF);
 
-  // ---------- page 3: status + Check update ----------
-  lv_obj_t *st_t = lv_label_create(t3); lv_obj_set_style_text_font(st_t, &lv_font_montserrat_20, 0);
-  lv_label_set_text(st_t, "Status"); lv_obj_align(st_t, LV_ALIGN_TOP_MID, 0, 22);
-  lbl_info = mk_label(t3, &lv_font_montserrat_14, lv_color_hex(0xc8d4e0), 236);
-  lv_obj_set_style_text_line_space(lbl_info, 4, 0);
-  lv_label_set_text(lbl_info, ""); lv_obj_align(lbl_info, LV_ALIGN_TOP_MID, 0, 54);
-
-  lbl = lv_label_create(t3); lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);   // net/OTA status
-  lv_label_set_long_mode(lbl, LV_LABEL_LONG_CLIP); lv_obj_set_width(lbl, 200);
-  lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_color(lbl, lv_color_hex(0x9fb0c0), 0);
-  lv_label_set_text(lbl, ""); lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, 262);
-
-  lv_obj_t *b = lv_btn_create(t3); lv_obj_set_size(b, 140, 34); lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 282);
+  // ---------- page 4: status + Check update ----------
+  ui_title(t3, "Status");
+  ui_divider(t3, 220, 62);
+  status_row(t3, 0, "Battery"); status_row(t3, 1, "Wi-Fi"); status_row(t3, 2, "Storage");
+  status_row(t3, 3, "Mic"); status_row(t3, 4, "Firmware");
+  lv_obj_t *b = ui_btn(t3, 150, 34, "Check update", &lbl_ver);
+  lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 250);
   lv_obj_add_event_cb(b, btn_cb, LV_EVENT_CLICKED, NULL);
-  lbl_ver = lv_label_create(b); lv_obj_set_style_text_font(lbl_ver, &lv_font_montserrat_14, 0);
-  lv_label_set_text(lbl_ver, "v" FW_STR "  Check update"); lv_obj_center(lbl_ver);
+  lbl = ui_label(t3, &lv_font_montserrat_12, C_GREY, 200, "");   // net/OTA status
+  lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+  lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, 292);
 
-  // ---------- page indicator dots (top layer, inside the round area) ----------
+  // ---------- page dots ----------
   for (int i = 0; i < NPAGES; i++) {
     dots[i] = lv_obj_create(lv_layer_top()); lv_obj_remove_style_all(dots[i]);
-    lv_obj_set_size(dots[i], 8, 8); lv_obj_set_style_radius(dots[i], LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_size(dots[i], 6, 6); lv_obj_set_style_radius(dots[i], LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(dots[i], LV_OPA_COVER, 0);
     lv_obj_clear_flag(dots[i], LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(dots[i], LV_ALIGN_TOP_MID, (i - 2) * 16, 340);
+    lv_obj_align(dots[i], LV_ALIGN_TOP_MID, (i - 2) * 14, 342);
   }
-}
-
-static void swatch_done(lv_timer_t *t) { lv_obj_del((lv_obj_t *)t->user_data); lv_timer_del(t); }
-static void color_swatches() {   // 4 s boot strip: red, green, blue, My Melody pink, yellow - shows true panel colours
-  const uint32_t cols[] = {0xFF0000, 0x00FF00, 0x0000FF, 0xF090B0, 0xFFE000};
-  lv_obj_t *c = lv_obj_create(lv_layer_top()); lv_obj_remove_style_all(c);
-  lv_obj_set_size(c, 200, 36); lv_obj_align(c, LV_ALIGN_TOP_MID, 0, 120);
-  lv_obj_clear_flag(c, LV_OBJ_FLAG_CLICKABLE);
-  for (int i = 0; i < 5; i++) {
-    lv_obj_t *q = lv_obj_create(c); lv_obj_remove_style_all(q); lv_obj_set_size(q, 36, 36); lv_obj_set_pos(q, i * 41, 0);
-    lv_obj_set_style_bg_opa(q, LV_OPA_COVER, 0); lv_obj_set_style_bg_color(q, lv_color_hex(cols[i]), 0);
-  }
-  lv_timer_create(swatch_done, 4000, c);
 }
 
 void setup() {
   I2C_Init(); Backlight_Init(); LCD_Init(); Lvgl_Init();
   pinMode(9, OUTPUT); digitalWrite(9, LOW);           // speaker amp off
   build_ui();
-  color_swatches();
   ensure_tz();
   time_t e; if (rtc_read_epoch(&e)) { struct timeval tvv = { e, 0 }; settimeofday(&tvv, NULL); time_src = "from RTC (offline)"; }
   rec_init();
@@ -342,14 +344,20 @@ void setup() {
 }
 
 void loop() {
-  static char shown_net[96], shown_stat[96], shown_diag[320], tbuf[16];
+  static char shown_net[96], shown_stat[96], tbuf[16];
   static int last_state = -1, last_page = -1;
-  static uint32_t last_ui = 0, last_slow = 0, last_tk = 0;
+  static uint32_t last_ui = 0, last_slow = 0, last_tk = 0, last_hs = 0;
   uint32_t now = millis();
   if (now - last_tk >= 33) {   // Tauke face + state machine
     last_tk = now;
     tk_tick(last_page == 1 || lv_obj_get_scroll_x(tv) / 360 == 1 || (lv_obj_get_scroll_x(tv) + 359) / 360 == 1);
   }
+#ifdef HAVE_HEADSET
+  if (rec.state == REC_RECORDING && now - last_hs >= HEADSET_MS) {   // animate character while recording
+    last_hs = now; hs_frame = (hs_frame + 1) % HEADSET_FRAMES;
+    lv_img_set_src(hs_img, &headset_frames[hs_frame]);
+  } else if (rec.state != REC_RECORDING && hs_frame != 0) { hs_frame = 0; lv_img_set_src(hs_img, &headset_frames[0]); }
+#endif
   if (now - last_ui >= 100) {
     last_ui = now;
     if (strcmp(shown_net, status_txt)) { strcpy(shown_net, status_txt); lv_label_set_text(lbl, shown_net); }
@@ -357,38 +365,29 @@ void loop() {
     snprintf(tbuf, sizeof tbuf, "%02lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
     lv_label_set_text(lbl_time, tbuf);
     lv_bar_set_value(bar, rec.state == REC_RECORDING ? rec.level : 0, LV_ANIM_OFF);
-    char fr[16], st[96], dg[320];
+    char fr[16], st[96];
     fmt_dur(fr, sizeof fr, rec.free_secs);
-    snprintf(st, sizeof st, "%s | %s %s", rec.msg, rec.storage, fr);
-    if (strcmp(shown_stat, st)) { strcpy(shown_stat, st); lv_label_set_text(lbl_stat, shown_stat); }
-    snprintf(dg, sizeof dg, "%s\n%s | %s | %d saved%s\n%s", rec.mic, rec.storage, rec.sd, rec.count,
-             rec.dropped ? " | drops!" : "", rec.i2c);
-    if (strcmp(shown_diag, dg)) { strcpy(shown_diag, dg); lv_label_set_text(lbl_diag, shown_diag); }
+    // minimal: only show problems, else free time
+    bool problem = strcmp(rec.msg, "ready") && strcmp(rec.msg, "recording") && strcmp(rec.msg, "saved") &&
+                   strcmp(rec.msg, "playing") && strcmp(rec.msg, "deleted") && rec.msg[0];
+    if (problem) snprintf(st, sizeof st, "%s", rec.msg); else snprintf(st, sizeof st, "%s left", fr);
+    if (strcmp(shown_stat, st)) {
+      strcpy(shown_stat, st); lv_label_set_text(lbl_stat, shown_stat);
+      lv_obj_set_style_text_color(lbl_stat, lv_color_hex(problem ? C_RED : C_GREY), 0);
+    }
     int stt = rec.state;
     if (stt != last_state) {
       last_state = stt;
-      lv_label_set_text(rec_lbl, stt == REC_IDLE ? "REC" : (stt == REC_RECORDING ? "STOP" : "..."));
-      lv_obj_set_style_bg_color(rec_btn, stt == REC_RECORDING ? lv_color_hex(0x701018) : lv_color_hex(0xd02030), 0);
+      rec_show_state(stt);
       bool recording = (stt != REC_IDLE);
       // no page swiping while recording: stray swipes can't interfere
       if (recording) { lv_obj_clear_flag(tv, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_tile_id(tv, 0, 0, LV_ANIM_OFF); }
       else if (tk_state != TK_LISTEN) lv_obj_add_flag(tv, LV_OBJ_FLAG_SCROLLABLE);
-      if (recording) lv_obj_add_flag(lbl_diag, LV_OBJ_FLAG_HIDDEN); else lv_obj_clear_flag(lbl_diag, LV_OBJ_FLAG_HIDDEN);
-#ifdef HAVE_MELODY
-      lv_anim_del(melody, bob_cb); lv_obj_set_style_translate_y(melody, 0, 0);
-      lv_img_set_zoom(melody, recording ? MELODY_ZOOM_REC : MELODY_ZOOM_IDLE);
-      lv_obj_align(melody, LV_ALIGN_TOP_MID, 0, recording ? MELODY_TOP_REC : MELODY_TOP_IDLE);
-      if (stt == REC_RECORDING) {
-        lv_anim_t a; lv_anim_init(&a); lv_anim_set_var(&a, melody); lv_anim_set_exec_cb(&a, bob_cb);
-        lv_anim_set_values(&a, 0, -8); lv_anim_set_time(&a, 600); lv_anim_set_playback_time(&a, 600);
-        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE); lv_anim_start(&a);
-      }
-#endif
       if (stt == REC_IDLE) list_dirty = true;
     }
     // page dots + per-page refresh
     int page = (lv_obj_get_scroll_x(tv) + 180) / 360; if (page < 0) page = 0; if (page > NPAGES - 1) page = NPAGES - 1;
-    for (int i = 0; i < NPAGES; i++) lv_obj_set_style_bg_color(dots[i], i == page ? lv_color_white() : lv_color_hex(0x4a5a6a), 0);
+    for (int i = 0; i < NPAGES; i++) lv_obj_set_style_bg_color(dots[i], lv_color_hex(i == page ? C_TEXT : C_LINE), 0);
     if (page != last_page) { last_page = page; if (page == PG_LIST) list_dirty = true; last_slow = 0; }
     if (page == PG_LIST && (list_dirty || rec.count != list_seen_count)) refresh_list();
     if (play_box && !rec_playing) { lv_msgbox_close_async(play_box); play_box = NULL; }
@@ -397,19 +396,13 @@ void loop() {
     last_slow = now;
     time_tick();
     if (last_page == PG_STATUS) {
-      char bt[80], inf[400], ssid[40];
-      battery_text(bt, sizeof bt);
-      if (WiFi.status() == WL_CONNECTED) {
-        snprintf(ssid, sizeof ssid, "%s", WiFi.SSID().c_str());
-        snprintf(inf, sizeof inf, "%s\nWi-Fi: %s\n%s  %d dBm\nFirmware: v%d\nStorage: %s", bt, ssid,
-                 WiFi.localIP().toString().c_str(), WiFi.RSSI(), FW_VERSION, rec.storage);
-      } else {
-        snprintf(inf, sizeof inf, "%s\nWi-Fi: not connected\n(join AP Puck-Setup)\nFirmware: v%d\nStorage: %s", bt, FW_VERSION, rec.storage);
-      }
-      char fr2[16]; fmt_dur(fr2, sizeof fr2, rec.free_secs);
-      size_t L = strlen(inf);
-      snprintf(inf + L, sizeof inf - L, "\nRecording time left: %s", fr2);
-      lv_label_set_text(lbl_info, inf);
+      char v[64], fr2[16];
+      bat_short(v, sizeof v); lv_label_set_text(st_val[0], v);
+      if (WiFi.status() == WL_CONNECTED) snprintf(v, sizeof v, "%s", WiFi.SSID().c_str()); else snprintf(v, sizeof v, "Join Puck-Setup");
+      lv_label_set_text(st_val[1], v);
+      fmt_dur(fr2, sizeof fr2, rec.free_secs); snprintf(v, sizeof v, "%s, %s", rec.storage, fr2); lv_label_set_text(st_val[2], v);
+      lv_label_set_text(st_val[3], strncmp(rec.mic, "mic: ok", 7) == 0 ? "OK" : rec.mic + (strncmp(rec.mic, "mic: ", 5) ? 0 : 5));
+      snprintf(v, sizeof v, "v%d", FW_VERSION); lv_label_set_text(st_val[4], v);
     }
   }
   Lvgl_Loop();
