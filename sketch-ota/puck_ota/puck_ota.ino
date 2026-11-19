@@ -194,6 +194,7 @@ static void build_ui() {
 }
 
 void setup() {
+  Serial.begin(115200);
   I2C_Init(); Backlight_Init(); LCD_Init(); Lvgl_Init();
   pinMode(9, OUTPUT); digitalWrite(9, LOW);           // speaker amp off
   build_ui();
@@ -237,5 +238,13 @@ void loop() {
     sub_refresh();
   }
   Lvgl_Loop();
+  {  // v13: log LVGL flush rate while a game is open (flushes/s, px/flush, avg flush ms)
+    static uint32_t fps_t = 0, fc0 = 0, fp0 = 0, fu0 = 0;
+    if (gh_cur >= 0 && now - fps_t >= 2000) {
+      uint32_t c = lv_flush_cnt - fc0, p = lv_flush_px - fp0, u = lv_flush_us - fu0;
+      Serial.printf("[perf] %.1f flush/s, %u px/s, flush %.2f ms avg, loop %lu ms\n", c * 1000.0f / (now - fps_t), (unsigned)(p * 1000.0f / (now - fps_t)), c ? u / 1000.0f / c : 0.0f, (unsigned long)(millis() - now));
+      fc0 = lv_flush_cnt; fp0 = lv_flush_px; fu0 = lv_flush_us; fps_t = now;
+    } else if (gh_cur < 0) fps_t = now;
+  }
   vTaskDelay(pdMS_TO_TICKS(gh_cur >= 0 ? 1 : 5));
 }

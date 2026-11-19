@@ -23,6 +23,11 @@ static GhGame gh_games[3]; static int gh_n = 0;
 static lv_obj_t *gh_bub[3], *gh_score[3], *gh_cont = NULL, *gh_page = NULL;
 static int gh_cur = -1;   // game currently open, -1 = none
 static int gh_pending = -1;
+static void gh_mem(const char *tag) {
+  Serial.printf("[games] %s heap=%u (min %u) psram=%u lvfl=%u\n", tag, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+    (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned)lv_flush_cnt);
+}
+static void gh_del_cont_async(void *o) { lv_obj_del((lv_obj_t *)o); }   // runs after the module's own del_async(s) (FIFO), so no dangling child delete
 
 static void gh_register() {
 #ifdef HAVE_G_FLAPPY
@@ -66,10 +71,13 @@ static void gh_zoom_cb(void *o, int32_t v) { lv_obj_set_style_transform_zoom((lv
 static void gh_teardown(bool force_close) {
   if (gh_cur < 0) return;
   GhGame &g = gh_games[gh_cur];
+  Serial.printf("[games] close %s (force=%d)\n", g.name, (int)force_close);
   if (force_close) g.close();
-  if (gh_cont) { lv_obj_del(gh_cont); gh_cont = NULL; }
+  if (gh_cont) { lv_async_call(gh_del_cont_async, gh_cont); gh_cont = NULL; }
+  int was = gh_cur; (void)was;
   gh_cur = -1; lock_game = false; nav_apply(); gh_refresh();
-  for (int i = 0; i < gh_n; i++) lv_obj_set_style_transform_zoom(gh_bub[i], 256, 0);
+  for (int i = 0; i < gh_n; i++) { lv_obj_set_style_transform_zoom(gh_bub[i], 256, 0); lv_obj_set_style_shadow_width(gh_bub[i], 14, 0); }
+  gh_mem("after close");
 }
 static void gh_exit_async(void *) { gh_teardown(false); }   // game exited itself via Back (modules close themselves)
 static void gh_on_exit() { lv_async_call(gh_exit_async, NULL); }   // never delete the game's UI from inside its own callback
@@ -81,20 +89,36 @@ static void gh_launch_async(void *) {
   lv_obj_set_style_bg_color(gh_cont, lv_color_hex(C_BG), 0); lv_obj_set_style_bg_opa(gh_cont, LV_OPA_COVER, 0);
   lv_obj_clear_flag(gh_cont, LV_OBJ_FLAG_SCROLLABLE);
   gh_cur = i; lock_game = true; nav_apply();
+  gh_mem("before open");
+  Serial.printf("[games] open %s\n", gh_games[i].name);
   gh_games[i].open(gh_cont, gh_on_exit);
+  gh_mem("after open");
 }
 static void gh_zoom_done(lv_anim_t *a) { lv_async_call(gh_launch_async, NULL); }
 static void gh_tap_cb(lv_event_t *e) {
   if (gh_cur >= 0 || gh_pending >= 0) return;
   int i = (int)(intptr_t)lv_event_get_user_data(e); gh_pending = i;
   lv_anim_t a; lv_anim_init(&a); lv_anim_set_var(&a, gh_bub[i]); lv_anim_set_exec_cb(&a, gh_zoom_cb);
-  lv_anim_set_values(&a, 256, 360); lv_anim_set_time(&a, 160); lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+  lv_obj_set_style_shadow_width(gh_bub[i], 0, 0); lv_anim_set_values(&a, 256, 320); lv_anim_set_time(&a, 120); lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
   lv_anim_set_ready_cb(&a, gh_zoom_done); lv_anim_start(&a);
+}
+// Self-test: long-press the "Games" title -> opens/closes every game 10x, logging heap each time (serial 115200)
+static int gh_stress = 0; static uint32_t gh_stress_t = 0;
+static void gh_stress_cb(lv_event_t *e) { if (!gh_stress && gh_cur < 0 && gh_n) { gh_stress = 1; gh_stress_t = millis(); Serial.println("[games] stress test start"); gh_mem("stress start"); } }
+static void gh_stress_step() {
+  if (!gh_stress || millis() - gh_stress_t < 500) return;
+  gh_stress_t = millis();
+  int idx = (gh_stress - 1) / 2;
+  if (idx >= gh_n * 10) { gh_stress = 0; gh_mem("stress done"); Serial.println("[games] stress test done"); return; }
+  if (gh_stress & 1) { gh_pending = idx % gh_n; gh_launch_async(NULL); }
+  else gh_teardown(true);
+  gh_stress++;
 }
 static void gh_build(lv_obj_t *t) {
   gh_register(); gh_page = t;
   { Preferences p; if (p.begin("puck", false)) { p.remove("g_best"); p.remove("g_axis"); p.end(); } }   // old Drive game keys
   lv_obj_t *h = ui_label(t, &lv_font_montserrat_16, C_TEXT, 0, "Games"); lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 22);
+  lv_obj_add_flag(h, LV_OBJ_FLAG_CLICKABLE); lv_obj_set_ext_click_area(h, 20); lv_obj_add_event_cb(h, gh_stress_cb, LV_EVENT_LONG_PRESSED, NULL);
   const int D = 92;
   // centres: triangle for 3, side by side for 2, middle for 1
   int cx[3], cy[3];
@@ -127,6 +151,7 @@ static void gh_build(lv_obj_t *t) {
 // call every loop with whether the Games page is on screen; closes a running game if the page is left
 static void gh_tick(bool visible) {
   static bool was = false;
+  gh_stress_step();
   if (gh_cur >= 0 && !visible) gh_teardown(true);   // page left: close the game
   if (visible && !was) gh_refresh();
   was = visible;
