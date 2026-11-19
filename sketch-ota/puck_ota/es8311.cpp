@@ -485,3 +485,5 @@ es8311_handle_t es8311_create(const i2c_port_t port, const uint16_t dev_addr)
     sensor->dev_addr = dev_addr;
     return (es8311_handle_t) sensor;
 }
+
+esp_err_t es8311_write_reg_pub(es8311_handle_t dev, uint8_t reg_addr, uint8_t data) { return dev ? es8311_write_reg(dev, reg_addr, data) : ESP_ERR_INVALID_ARG; }

@@ -114,6 +114,7 @@ esp_err_t es8311_init(es8311_handle_t dev, const es8311_clock_config_t *const cl
  *     - ESP_OK success
  *     - Else fail
  */
+esp_err_t es8311_write_reg_pub(es8311_handle_t dev, uint8_t reg_addr, uint8_t data);   // raw register write (puck)
 esp_err_t es8311_voice_volume_set(es8311_handle_t dev, int volume, int *volume_set);
 
 /**

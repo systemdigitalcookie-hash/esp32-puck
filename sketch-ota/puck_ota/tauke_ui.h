@@ -139,8 +139,7 @@ static void tk_go(int st) {
   lv_label_set_text(tk_btn_lbl, st == TK_LISTEN ? "Release to send" : (st == TK_SPEAK ? "Tap to stop" : (st == TK_THINK ? "Tap to cancel" : "Hold to talk")));
   lv_obj_set_style_bg_color(tk_btn, lv_color_hex(st == TK_LISTEN ? C_TEXT : C_BG), 0);
   lv_obj_set_style_text_color(tk_btn, lv_color_hex(st == TK_LISTEN ? C_BG : C_TEXT), 0);
-  if (st == TK_LISTEN) lv_obj_clear_flag(tv, LV_OBJ_FLAG_SCROLLABLE);   // no page swipes while talking
-  else if (rec.state == REC_IDLE) lv_obj_add_flag(tv, LV_OBJ_FLAG_SCROLLABLE);
+  lock_tk = (st == TK_LISTEN); nav_apply();   // no page swipes while talking
 }
 
 static void tk_error(const char *m) {

@@ -3,16 +3,15 @@
 #pragma once
 #include <Preferences.h>
 
-static const char *GAIN_TXT[15] = {"0", "3", "6", "9", "12", "15", "18", "21", "24", "27", "30", "33", "34.5", "36", "37.5"};
 static int g_bright = 70;
 
 static void settings_load() {   // call before rec_init() so the mic gain applies from boot
   Preferences p;
   if (p.begin("puck", true)) {
-    g_spk_volume = p.getInt("vol", 80); g_mic_gain = p.getInt("gain", 10); g_bright = p.getInt("bright", 70);
+    g_spk_volume = p.getInt("vol2", 90); g_mic_gain = p.getInt("gain_db", 42); g_bright = p.getInt("bright", 70);
     p.end();
   }
-  g_spk_volume = constrain((int)g_spk_volume, 0, 100); g_mic_gain = constrain((int)g_mic_gain, 0, 14); g_bright = constrain(g_bright, 10, 100);
+  g_spk_volume = constrain((int)g_spk_volume, 0, 100); g_mic_gain = constrain((int)g_mic_gain, 0, 60); g_bright = constrain(g_bright, 10, 100);
   Set_Backlight(g_bright);
 }
 static void settings_save_int(const char *k, int v) { Preferences p; if (p.begin("puck", false)) { p.putInt(k, v); p.end(); } }
@@ -74,7 +73,7 @@ static void bat_info(int *soc, int *mv, int *ma, bool *present) {
 static void settings_summaries() {   // 1 Hz while the Settings page is visible
   char b[64];
   snprintf(b, sizeof b, "Volume %d", (int)g_spk_volume); lv_label_set_text(set_sum[SET_SOUND], b);
-  snprintf(b, sizeof b, "Gain %s dB", GAIN_TXT[g_mic_gain]); lv_label_set_text(set_sum[SET_MIC], b);
+  snprintf(b, sizeof b, "Gain %d dB", (int)g_mic_gain); lv_label_set_text(set_sum[SET_MIC], b);
   snprintf(b, sizeof b, "Brightness %d%%", g_bright); lv_label_set_text(set_sum[SET_DISPLAY], b);
   char gb[16]; fmt_gb(gb, sizeof gb, rec_free_bytes());
   snprintf(b, sizeof b, "%s %s free", rec.storage[0] ? rec.storage : "-", gb); lv_label_set_text(set_sum[SET_STORAGE], b);
@@ -136,13 +135,13 @@ static void vol_cb(lv_event_t *e) {
   lv_obj_t *s = lv_event_get_target(e);
   g_spk_volume = lv_slider_get_value(s);
   char b[24]; snprintf(b, sizeof b, "%d", (int)g_spk_volume); lv_label_set_text(sub_lbl, b);
-  if (lv_event_get_code(e) == LV_EVENT_RELEASED) settings_save_int("vol", g_spk_volume);
+  if (lv_event_get_code(e) == LV_EVENT_RELEASED) settings_save_int("vol2", g_spk_volume);
 }
 static void gain_cb(lv_event_t *e) {
   lv_obj_t *s = lv_event_get_target(e);
-  g_mic_gain = lv_slider_get_value(s);
-  char b[24]; snprintf(b, sizeof b, "%s dB", GAIN_TXT[g_mic_gain]); lv_label_set_text(sub_lbl, b);
-  if (lv_event_get_code(e) == LV_EVENT_RELEASED) settings_save_int("gain", g_mic_gain);
+  g_mic_gain = lv_slider_get_value(s) * 3;
+  char b[24]; snprintf(b, sizeof b, "%d dB", (int)g_mic_gain); lv_label_set_text(sub_lbl, b);
+  if (lv_event_get_code(e) == LV_EVENT_RELEASED) settings_save_int("gain_db", g_mic_gain);
 }
 static void bright_cb(lv_event_t *e) {
   lv_obj_t *s = lv_event_get_target(e);
@@ -253,9 +252,9 @@ static void sub_open(int kind) {
       break;
     case SET_MIC:
       ui_label(sub, &lv_font_montserrat_14, C_GREY, 0, "Gain"); lv_obj_align(lv_obj_get_child(sub, -1), LV_ALIGN_TOP_MID, -76, 92);
-      snprintf(b, sizeof b, "%s dB", GAIN_TXT[g_mic_gain]);
+      snprintf(b, sizeof b, "%d dB", (int)g_mic_gain);
       sub_lbl = ui_label(sub, &lv_font_montserrat_14, C_TEXT, 0, b); lv_obj_align(sub_lbl, LV_ALIGN_TOP_MID, 74, 92);
-      sub_slider = mk_slider(128, 0, 14, g_mic_gain);
+      sub_slider = mk_slider(128, 0, 20, g_mic_gain / 3);   // 0..60 dB in 3 dB steps
       lv_obj_add_event_cb(sub_slider, gain_cb, LV_EVENT_VALUE_CHANGED, NULL); lv_obj_add_event_cb(sub_slider, gain_cb, LV_EVENT_RELEASED, NULL);
       ui_label(sub, &lv_font_montserrat_12, C_GREY, 0, "Level"); lv_obj_align(lv_obj_get_child(sub, -1), LV_ALIGN_TOP_MID, 0, 158);
       sub_bar = lv_bar_create(sub); lv_obj_set_size(sub_bar, 210, 6); lv_obj_align(sub_bar, LV_ALIGN_TOP_MID, 0, 178);

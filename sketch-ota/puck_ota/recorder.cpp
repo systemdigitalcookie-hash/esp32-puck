@@ -22,8 +22,8 @@
 
 extern int es7210_last_wire_err, es7210_last_reg;
 RecInfo rec;
-volatile int g_spk_volume = 80;   // ES8311 0..100 (Settings > Sound)
-volatile int g_mic_gain = 10;     // ES7210 gain index 0..14, 10 = 30 dB (Settings > Microphone)
+volatile int g_spk_volume = 85;   // 0..100 -> ES8311 DAC -30..+12 dB (Settings > Sound)
+volatile int g_mic_gain = 42;     // total mic gain dB 0..60 = PGA (<=33 dB) + ES7210 digital volume (Settings > Microphone)
 static uint8_t es_addr = 0x40;
 static I2SClass i2s;
 static es7210_dev_handle_t es_h = NULL;
@@ -35,6 +35,16 @@ static volatile bool stop_req = false, cap_done = true;
 static File wf;
 static uint32_t data_bytes = 0;
 static uint32_t start_free_bytes = 0;
+
+// soft limiter: linear up to 24000, then smoothly compresses towards 32767 (no hard clipping)
+static inline int soft_limit(int x) {
+  const int K = 24000;
+  int a = x < 0 ? -x : x;
+  if (a <= K) return x;
+  int over = a - K;                                  // 0..~41000 for a 2x sum
+  int y = K + (int)(8767.0f * over / (over + 8767.0f));
+  return x < 0 ? -y : y;
+}
 
 static void put_msg(const char *m) { strncpy(rec.msg, m, sizeof rec.msg - 1); rec.msg[sizeof rec.msg - 1] = 0; }
 
@@ -108,12 +118,18 @@ static void capture_task(void *) {
     size_t got = i2s.readBytes((char *)st, sizeof st);
     if (got < sizeof st) { vTaskDelay(1); continue; }   // never spin: would starve the writer on this core
     if (skip > 0) { skip--; continue; }
-    int peak = 0;
+    int peak = 0, pl = 0, pr = 0;
     for (int i = 0; i < CHUNK_FRAMES; i++) {
-      int m = ((int)st[2 * i] + (int)st[2 * i + 1]) / 2;   // mix both mics to mono
+      int l = st[2 * i], r = st[2 * i + 1];
+      int al = l < 0 ? -l : l, ar = r < 0 ? -r : r; if (al > pl) pl = al; if (ar > pr) pr = ar;
+      int m = soft_limit(l + r);   // v10: SUM both mics (v1-v9 averaged them = -6 dB), soft-limited instead of clipping
       mono[i] = (int16_t)m;
       int a = m < 0 ? -m : m; if (a > peak) peak = a;
     }
+    { static uint32_t lt = 0; static int mpl = 0, mpr = 0, mo = 0;
+      mpl = max(mpl, pl); mpr = max(mpr, pr); mo = max(mo, peak);
+      if (millis() - lt > 2000) { lt = millis(); Serial.printf("[mic] peak L=%d R=%d out=%d gain=%ddB\n", mpl, mpr, mo, (int)g_mic_gain); mpl = mpr = mo = 0; } }
+    if (rec.state == REC_PAUSED) { rec.level = 0; continue; }   // keep I2S flowing, but write nothing while paused
     rec.level = (int)(sqrtf(peak / 12000.0f) * 100.0f); if (rec.level > 100) rec.level = 100;
     uint32_t n = sizeof mono;
     if (RING_SZ - (head - tail) < n) { rec.dropped += n; continue; }
@@ -190,9 +206,10 @@ static bool codec_configure(char *err, size_t en) {
   if (es7210_new_codec(&cfg, &es_h) != ESP_OK) { snprintf(err, en, "es7210 alloc fail"); return false; }
   es7210_codec_config_t cc = {};
   cc.i2s_format = ES7210_I2S_FMT_I2S; cc.mclk_ratio = 256; cc.sample_rate_hz = SR;
-  cc.bit_width = ES7210_I2S_BITS_16B; cc.mic_bias = ES7210_MIC_BIAS_2V87; cc.mic_gain = (es7210_mic_gain_t)constrain(g_mic_gain, 0, 14);
+  cc.bit_width = ES7210_I2S_BITS_16B; cc.mic_bias = ES7210_MIC_BIAS_2V87; int tg = constrain((int)g_mic_gain, 0, 60), pga = min(tg, 33) / 3;   // PGA index 0..11 = 0..33 dB
+  cc.mic_gain = (es7210_mic_gain_t)pga;
   cc.flags.tdm_enable = false;
-  if (es7210_config_codec(es_h, &cc) != ESP_OK || es7210_config_volume(es_h, 0) != ESP_OK) {
+  if (es7210_config_codec(es_h, &cc) != ESP_OK || es7210_config_volume(es_h, (int8_t)(tg - pga * 3)) != ESP_OK) {
     if (es7210_last_wire_err) snprintf(err, en, "i2c e%d @0x%02X reg 0x%02X", es7210_last_wire_err, es_addr, es7210_last_reg);
     else snprintf(err, en, "es7210 cfg err @0x%02X", es_addr);
     return false;
@@ -273,11 +290,14 @@ void rec_start() {
 }
 
 void rec_stop() {   // non-blocking: the writer task finalizes and sets REC_IDLE
-  if (rec.state != REC_RECORDING) return;
+  if (rec.state != REC_RECORDING && rec.state != REC_PAUSED) return;
   put_msg("saving...");
   rec.state = REC_FINALIZING;
   stop_req = true;
 }
+
+void rec_pause() { if (rec.state == REC_RECORDING) { rec.state = REC_PAUSED; put_msg("paused"); } }
+void rec_resume() { if (rec.state == REC_PAUSED) { rec.state = REC_RECORDING; put_msg("recording"); } }
 
 void rec_force_idle(const char *why) {   // UI watchdog: give the screen back even if the writer is stuck
   if (rec.state == REC_IDLE) return;
@@ -296,7 +316,7 @@ int rec_list(RecFile *out, int max) {
   while (f && n < max) {
     int idx;
     if (!f.isDirectory() && sscanf(f.name(), "rec_%d.wav", &idx) == 1) {
-      strncpy(out[n].name, f.name(), 23); out[n].name[23] = 0; out[n].bytes = f.size(); n++;
+      strncpy(out[n].name, f.name(), 23); out[n].name[23] = 0; out[n].bytes = f.size(); out[n].t = f.getLastWrite(); n++;
     }
     f = d.openNextFile();
   }
@@ -317,16 +337,36 @@ bool rec_delete(const char *name) {
 // ---------------- playback (ES8311 DAC + speaker amp on GPIO9) ----------------
 #define PIN_PA 9
 volatile bool rec_playing = false;
+volatile bool rec_play_paused = false;
+volatile uint32_t rec_play_pos = 0, rec_play_total = 0;   // bytes of PCM played / total
 static volatile bool play_stop = false;
 static File pf;
 static es8311_handle_t dac_h = NULL;
 
+static float play_gain = 1.0f;
+// Volume 0..100 -> ES8311 DAC register 0x32 (0xBF = 0 dB, 0.5 dB/step). 0 = mute, 1..100 = -30..+12 dB.
+// (v1-v9 used es8311_voice_volume_set(70/80) = -6.5 / +6 dB.)
+static esp_err_t spk_volume_apply() {
+  int v = constrain((int)g_spk_volume, 0, 100);
+  int reg = v == 0 ? 0 : 0xBF + (int)lroundf(2.0f * (-30.0f + 42.0f * v / 100.0f));
+  return es8311_write_reg_pub(dac_h, 0x32, (uint8_t)constrain(reg, 0, 255));
+}
 static void play_task(void *) {
-  static uint8_t buf[4096];
+  static int16_t buf[2048];
+  int pk = 0; uint32_t lt = millis();
   while (!play_stop) {
-    int n = pf.read(buf, sizeof buf);
+    if (rec_play_paused) { memset(buf, 0, sizeof buf); i2s.write((uint8_t *)buf, 512); continue; }   // feed silence (DMA would loop old data)
+    int n = pf.read((uint8_t *)buf, sizeof buf) / 2;
     if (n <= 0) break;
-    i2s.write(buf, n & ~1);
+    for (int i = 0; i < n; i++) {
+      int v = (int)(buf[i] * play_gain);
+      int a = v < 0 ? -v : v;
+      if (a > 30000) { play_gain *= 30000.0f / a; v = (int)(buf[i] * play_gain); }   // limiter: never clip, only back off
+      buf[i] = (int16_t)v; if (a > pk) pk = a;
+    }
+    i2s.write((uint8_t *)buf, n * 2);
+    rec_play_pos += n * 2;
+    if (millis() - lt > 2000) { lt = millis(); Serial.printf("[play] peak=%d gain=%.2f vol=%d\n", pk, play_gain, (int)g_spk_volume); pk = 0; }
   }
   delay(120);                       // let DMA drain
   digitalWrite(PIN_PA, LOW);
@@ -343,6 +383,15 @@ void rec_play(const char *name) {
   if (!pf) { put_msg("cannot open file"); return; }
   uint8_t h[44];
   if (pf.read(h, 44) != 44 || memcmp(h, "RIFF", 4)) { pf.close(); put_msg("bad wav"); return; }
+  // auto playback gain from the first ~2 s (quiet old recordings get up to +18 dB; limiter in play_task prevents clipping)
+  {
+    static int16_t pre[4096]; int pk = 1;
+    size_t pos = pf.position();
+    for (int k = 0; k < 8; k++) { int n = pf.read((uint8_t *)pre, sizeof pre) / 2; if (n <= 0) break; for (int i = 0; i < n; i++) { int a = abs((int)pre[i]); if (a > pk) pk = a; } }
+    pf.seek(pos);
+    play_gain = constrain(22000.0f / pk, 1.0f, 8.0f);
+    Serial.printf("[play] %s first-2s peak=%d -> gain %.2f\n", name, pk, play_gain);
+  }
   pinMode(PIN_PA, OUTPUT); digitalWrite(PIN_PA, LOW);
   i2s.setPins(PIN_BCK, PIN_WS, PIN_DOUT, PIN_DIN, PIN_MCK);
   i2s.setTimeout(1000);
@@ -354,15 +403,17 @@ void rec_play(const char *name) {
   const es8311_clock_config_t clk = { .mclk_inverted = false, .sclk_inverted = false, .mclk_from_mclk_pin = true,
                                       .mclk_frequency = SR * 256, .sample_frequency = SR };
   if (!dac_h || es8311_init(dac_h, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16) != ESP_OK ||
-      es8311_voice_volume_set(dac_h, g_spk_volume, NULL) != ESP_OK || es8311_microphone_config(dac_h, false) != ESP_OK) {
+      spk_volume_apply() != ESP_OK || es8311_microphone_config(dac_h, false) != ESP_OK) {
     pf.close(); i2s.end(); put_msg("play: es8311 failed"); return;
   }
   digitalWrite(PIN_PA, HIGH);
-  play_stop = false; rec_playing = true; put_msg("playing");
+  play_stop = false; rec_play_paused = false; rec_play_pos = 0; rec_play_total = pf.size() > 44 ? pf.size() - 44 : 0;
+  rec_playing = true; put_msg("playing");
   xTaskCreatePinnedToCore(play_task, "play", 6144, NULL, 3, NULL, 0);
 }
 
-void rec_play_stop() { play_stop = true; }
+void rec_play_stop() { play_stop = true; rec_play_paused = false; }
+void rec_play_toggle_pause() { if (rec_playing) rec_play_paused = !rec_play_paused; }
 
 // ---------------- Tauke: push-to-talk capture to RAM / playback from RAM ----------------
 volatile uint32_t talk_cap_n = 0;
@@ -382,8 +433,7 @@ static void talk_cap_task(void *) {
     if (skip > 0) { skip--; continue; }
     int peak = 0;
     for (int i = 0; i < CHUNK_FRAMES && talk_cap_n < tc_max; i++) {
-      int m = (int)st[2 * i] + (int)st[2 * i + 1];         // sum both mics (= 2x avg, ~+6 dB for speech)
-      if (m > 32767) m = 32767; else if (m < -32768) m = -32768;
+      int m = soft_limit((int)st[2 * i] + (int)st[2 * i + 1]);   // sum both mics, soft-limited
       tc_buf[talk_cap_n++] = (int16_t)m;
       int a = m < 0 ? -m : m; if (a > peak) peak = a;
     }
@@ -446,7 +496,7 @@ bool talk_play_start(const int16_t *pcm, uint32_t samples) {
   const es8311_clock_config_t clk = { .mclk_inverted = false, .sclk_inverted = false, .mclk_from_mclk_pin = true,
                                       .mclk_frequency = SR * 256, .sample_frequency = SR };
   if (!dac_h || es8311_init(dac_h, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16) != ESP_OK ||
-      es8311_voice_volume_set(dac_h, g_spk_volume, NULL) != ESP_OK || es8311_microphone_config(dac_h, false) != ESP_OK) {
+      spk_volume_apply() != ESP_OK || es8311_microphone_config(dac_h, false) != ESP_OK) {
     i2s.end(); put_msg("play: es8311 failed"); return false;
   }
   digitalWrite(PIN_PA, HIGH);

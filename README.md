@@ -67,3 +67,19 @@ eyes (idle blink / listening look-up / thinking side-to-side / speaking squish+b
 - Capture task owns and stops I2S itself and never busy-spins; writer moved to core 1 at low priority so it cannot starve capture or vice versa.
 - UI save watchdog: swipe unlocks after 10 s, after 30 s the screen returns to idle with "save timed out - restart puck"; a stuck writer blocks new
   recordings with a clear message. Save errors are shown in red ("save failed" / "save error").
+
+## v10
+- **Recorder page = recorder + recordings.** Explicit states: Ready (record button, "Tap to record", recent list) ->
+  Recording (pulsing red dot, big timer, level bar, Pause / Stop) <-> Paused (timer blinks, Resume / Stop) ->
+  Saving (spinner) -> Saved ("Saved 0:42 to SD", 2 s) -> Ready; failures -> Error (Retry / OK). Pause/resume stays in the
+  same WAV. Buttons debounced (400 ms). Tap a recording for its detail screen: play/pause, progress, duration, storage,
+  size, Delete (confirm). Back arrow or swipe right returns. Each row has an empty "not uploaded" mark for future Notion sync.
+  The separate Recordings page is gone. Pages: Recorder, Tauke, Clock, Drive, Settings.
+- **Drive** (`game_ui.h`, sprites from `tools_sprites.py` -> `game_sprites.h`): tap Start holding the puck how you like
+  (that pose = straight), tilt to steer, dodge cars and cones. Score = obstacles passed, speed ramps up, best score in NVS.
+  Steering axis cycles on the start screen (X, X reversed, Y, Y reversed; saved). QMI8658 @0x6B read raw on the loop
+  task; serial logs `[imu] ax= ay= az=` at 5 Hz while playing. No sensor -> tap left/right half to steer.
+  Swiping is locked while playing.
+- **Louder**: recorder sums both mics (was averaged, -6 dB) with a soft limiter; mic gain is now total dB (default 42 =
+  PGA 33 + ES7210 digital 9, slider 0-60); speaker volume maps 1..100 -> -30..+12 dB on ES8311 reg 0x32 (default 90);
+  playback auto-gain (up to x8, limiter). Serial logs `[mic] peak` / `[play]`.

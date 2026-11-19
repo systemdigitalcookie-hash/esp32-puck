@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-enum RecStateE { REC_IDLE = 0, REC_RECORDING, REC_FINALIZING };
+enum RecStateE { REC_IDLE = 0, REC_RECORDING, REC_FINALIZING, REC_PAUSED };
 
 struct RecInfo {
   volatile int state;          // RecStateE
@@ -23,15 +23,20 @@ extern RecInfo rec;
 bool rec_init();    // call once after I2C (Wire) is up
 void rec_start();   // no-op unless idle
 void rec_stop();    // asks recorder to stop and finalize the WAV (non-blocking)
+void rec_pause();   // stop writing samples (same file)
+void rec_resume();
 void rec_force_idle(const char *why);   // UI watchdog escape hatch
 extern volatile bool rec_writer_alive;
 
 // ---- recordings list / playback / delete ----
-struct RecFile { char name[24]; uint32_t bytes; };
+struct RecFile { char name[24]; uint32_t bytes; time_t t; };
 int  rec_list(RecFile *out, int max);        // newest first; empty while recording
 bool rec_delete(const char *name);
 void rec_play(const char *name);             // plays through ES8311 + speaker pads; call from the UI task
 void rec_play_stop();
+void rec_play_toggle_pause();
+extern volatile bool rec_play_paused;
+extern volatile uint32_t rec_play_pos, rec_play_total;
 extern volatile bool rec_playing;
 
 // ---- Tauke voice: push-to-talk capture into RAM, and playback of PCM from RAM ----
@@ -47,6 +52,6 @@ extern volatile int talk_level;                             // 0..100 live level
 
 // ---- settings shared with the UI ----
 extern volatile int g_spk_volume;   // 0..100, applied at next playback start
-extern volatile int g_mic_gain;     // ES7210 gain index 0..14 (0,3,..,33,34.5,36,37.5 dB), applied at next mic open
+extern volatile int g_mic_gain;     // total mic gain dB 0..60 (PGA <=33 dB + ES7210 digital), applied at next mic open
 uint64_t rec_free_bytes();
 uint64_t rec_total_bytes();
