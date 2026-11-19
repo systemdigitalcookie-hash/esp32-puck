@@ -2,6 +2,8 @@
 #include "recorder.h"
 #include "ESP_I2S.h"
 #include "es7210.h"
+#include "es8311.h"
+#include <algorithm>
 #include "FS.h"
 #include "SD_MMC.h"
 #include "FFat.h"
@@ -228,6 +230,7 @@ bool rec_init() {
 
 void rec_start() {
   if (rec.state != REC_IDLE || !ring) return;
+  if (rec_playing) { put_msg("stop playback first"); return; }
   if (!mount_storage()) return;
   int c, maxidx; scan_files(&c, &maxidx, nullptr);
   char path[40]; snprintf(path, sizeof path, "/rec/rec_%04d.wav", maxidx + 1);
@@ -254,3 +257,81 @@ void rec_stop() {
   rec.state = REC_FINALIZING;
   stop_req = true;
 }
+
+// ---------------- recordings list / delete ----------------
+int rec_list(RecFile *out, int max) {
+  int n = 0;
+  if (!store || rec.state != REC_IDLE) return 0;
+  File d = store->open("/rec");
+  if (!d || !d.isDirectory()) return 0;
+  File f = d.openNextFile();
+  while (f && n < max) {
+    int idx;
+    if (!f.isDirectory() && sscanf(f.name(), "rec_%d.wav", &idx) == 1) {
+      strncpy(out[n].name, f.name(), 23); out[n].name[23] = 0; out[n].bytes = f.size(); n++;
+    }
+    f = d.openNextFile();
+  }
+  std::sort(out, out + n, [](const RecFile &a, const RecFile &b) { return strcmp(a.name, b.name) > 0; });
+  return n;
+}
+
+bool rec_delete(const char *name) {
+  if (!store || rec.state != REC_IDLE || rec_playing) return false;
+  char p[40]; snprintf(p, sizeof p, "/rec/%s", name);
+  bool ok = store->remove(p);
+  int c, m; scan_files(&c, &m, rec.last); rec.count = c;
+  rec.free_secs = free_bytes() / BYTES_PER_SEC;
+  put_msg(ok ? "deleted" : "delete failed");
+  return ok;
+}
+
+// ---------------- playback (ES8311 DAC + speaker amp on GPIO9) ----------------
+#define PIN_PA 9
+volatile bool rec_playing = false;
+static volatile bool play_stop = false;
+static File pf;
+static es8311_handle_t dac_h = NULL;
+
+static void play_task(void *) {
+  static uint8_t buf[4096];
+  while (!play_stop) {
+    int n = pf.read(buf, sizeof buf);
+    if (n <= 0) break;
+    i2s.write(buf, n & ~1);
+  }
+  delay(120);                       // let DMA drain
+  digitalWrite(PIN_PA, LOW);
+  pf.close();
+  i2s.end();
+  rec_playing = false;
+  vTaskDelete(NULL);
+}
+
+void rec_play(const char *name) {
+  if (rec.state != REC_IDLE || rec_playing || !store) return;
+  char p[40]; snprintf(p, sizeof p, "/rec/%s", name);
+  pf = store->open(p, FILE_READ);
+  if (!pf) { put_msg("cannot open file"); return; }
+  uint8_t h[44];
+  if (pf.read(h, 44) != 44 || memcmp(h, "RIFF", 4)) { pf.close(); put_msg("bad wav"); return; }
+  pinMode(PIN_PA, OUTPUT); digitalWrite(PIN_PA, LOW);
+  i2s.setPins(PIN_BCK, PIN_WS, PIN_DOUT, PIN_DIN, PIN_MCK);
+  i2s.setTimeout(1000);
+  if (!i2s.begin(I2S_MODE_STD, SR, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO, I2S_STD_SLOT_LEFT)) {
+    pf.close(); put_msg("play: i2s failed"); return;
+  }
+  // codec setup runs here (UI task) so I2C is never used from two tasks at once
+  if (!dac_h) dac_h = es8311_create(I2C_NUM_0, ES8311_ADDRRES_0);
+  const es8311_clock_config_t clk = { .mclk_inverted = false, .sclk_inverted = false, .mclk_from_mclk_pin = true,
+                                      .mclk_frequency = SR * 256, .sample_frequency = SR };
+  if (!dac_h || es8311_init(dac_h, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16) != ESP_OK ||
+      es8311_voice_volume_set(dac_h, 70, NULL) != ESP_OK || es8311_microphone_config(dac_h, false) != ESP_OK) {
+    pf.close(); i2s.end(); put_msg("play: es8311 failed"); return;
+  }
+  digitalWrite(PIN_PA, HIGH);
+  play_stop = false; rec_playing = true; put_msg("playing");
+  xTaskCreatePinnedToCore(play_task, "play", 6144, NULL, 3, NULL, 0);
+}
+
+void rec_play_stop() { play_stop = true; }

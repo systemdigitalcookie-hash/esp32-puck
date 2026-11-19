@@ -23,3 +23,11 @@ extern RecInfo rec;
 bool rec_init();    // call once after I2C (Wire) is up
 void rec_start();   // no-op unless idle
 void rec_stop();    // asks recorder to stop and finalize the WAV
+
+// ---- recordings list / playback / delete ----
+struct RecFile { char name[24]; uint32_t bytes; };
+int  rec_list(RecFile *out, int max);        // newest first; empty while recording
+bool rec_delete(const char *name);
+void rec_play(const char *name);             // plays through ES8311 + speaker pads; call from the UI task
+void rec_play_stop();
+extern volatile bool rec_playing;
