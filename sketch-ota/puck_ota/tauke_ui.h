@@ -224,6 +224,9 @@ static void tk_build(lv_obj_t *t) {
 
 // eyes: w/h size, dx/dy offset from rest position; brows follow
 static void tk_eyes(int w, int h, int dx, int dy) {
+  static int lw = -1, lh, ldx, ldy;   // v16: skip the relayout when the eyes did not change
+  if (w == lw && h == lh && dx == ldx && dy == ldy) return;
+  lw = w; lh = h; ldx = dx; ldy = dy;
   for (int i = 0; i < 2; i++) {
     int x = (i ? TK_EYE_X : -TK_EYE_X) + dx, y = TK_EYE_Y + dy;
     lv_obj_set_size(tk_eye[i], w, h);
@@ -259,7 +262,7 @@ static void tk_tick(bool visible) {
   if (!visible) return;
   st = tk_state; t = now - tk_t0;
   int lvl = talk_level;
-  lv_obj_set_style_translate_y(tk_face, 0, 0);
+  int ty = 0;   // v16: face bob; the style is only touched when the value changes (it forces a relayout)
   switch (st) {
     case TK_IDLE: {
       int h = 56;
@@ -271,7 +274,7 @@ static void tk_tick(bool visible) {
     case TK_THINK:  tk_eyes(26, 50, (int)(18 * sinf(t / 260.0f)), -6); break;
     case TK_SPEAK: {
       tk_eyes(30 + lvl / 12, 56 - lvl * 26 / 100, 0, 2);
-      lv_obj_set_style_translate_y(tk_face, (int)(4 * sinf(t / 110.0f)), 0);
+      ty = (int)(4 * sinf(t / 110.0f));
       if (tk_out_n) {   // scroll long captions along with playback
         lv_coord_t over = lv_obj_get_height(tk_cap) - lv_obj_get_height(tk_cap_box);
         if (over > 0) lv_obj_scroll_to_y(tk_cap_box, (lv_coord_t)((int64_t)over * talk_play_pos / tk_out_n), LV_ANIM_OFF);
@@ -280,4 +283,6 @@ static void tk_tick(bool visible) {
     }
     default: tk_eyes(30, 14, 0, 6); break;   // error: squint
   }
+  static int ty_shown = 0;
+  if (ty != ty_shown) { ty_shown = ty; lv_obj_set_style_translate_y(tk_face, ty, 0); }
 }

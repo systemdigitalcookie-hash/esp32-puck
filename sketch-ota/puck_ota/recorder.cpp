@@ -98,9 +98,14 @@ static void scan_files(int *count, int *maxidx, char *lastname) {
   }
 }
 
+// v16: free/total space is cached here; the UI (Settings) reads the cache instead of hitting the SD card (f_getfree can be slow)
+static volatile uint64_t g_free_cache = 0, g_total_cache = 0;
 static uint32_t free_bytes() {
-  if (store == &SD_MMC) return (uint32_t)min<uint64_t>(SD_MMC.totalBytes() - SD_MMC.usedBytes(), 0xFFFFFFFFULL);
-  return (uint32_t)FFat.freeBytes();
+  uint64_t f = 0, t = 0;
+  if (store == &SD_MMC) { t = SD_MMC.totalBytes(); f = t - SD_MMC.usedBytes(); }
+  else if (store == &FFat) { t = FFat.totalBytes(); f = FFat.freeBytes(); }
+  g_free_cache = f; g_total_cache = t;
+  return (uint32_t)min<uint64_t>(f, 0xFFFFFFFFULL);
 }
 
 static bool sd_failed = false, sd_fellback = false;   // sd_failed: a write test / real write failed -> internal flash until reboot
@@ -382,7 +387,7 @@ void rec_start() {
   put_msg("recording");
   rec.state = REC_RECORDING;
   // capture on core 0 (high prio, short bursts); writer on core 1 at low prio so slow flash/SD writes never starve capture
-  xTaskCreatePinnedToCore(writer_task, "wr", 8192, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(writer_task, "wr", 8192, NULL, 2, NULL, 0);   // v16: core 0 (was core 1, sharing time with the UI loop)
   xTaskCreatePinnedToCore(capture_task, "cap", 6144, NULL, 5, NULL, 0);
 }
 
@@ -604,13 +609,5 @@ bool talk_play_start(const int16_t *pcm, uint32_t samples) {
 
 void talk_play_stop() { tp_stop = true; }
 
-uint64_t rec_free_bytes() {
-  if (store == &SD_MMC) return SD_MMC.totalBytes() - SD_MMC.usedBytes();
-  if (store == &FFat) return FFat.freeBytes();
-  return 0;
-}
-uint64_t rec_total_bytes() {
-  if (store == &SD_MMC) return SD_MMC.totalBytes();
-  if (store == &FFat) return FFat.totalBytes();
-  return 0;
-}
+uint64_t rec_free_bytes() { return store ? g_free_cache : 0; }    // v16: cached (refreshed on mount, record start, save, delete)
+uint64_t rec_total_bytes() { return store ? g_total_cache : 0; }

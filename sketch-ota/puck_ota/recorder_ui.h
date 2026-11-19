@@ -16,6 +16,7 @@ static lv_obj_t *r_stage, *r_saved_lbl, *r_err_lbl;
 static RecFile files[40];
 static int nfiles = 0;
 static bool list_dirty = true;
+static uint32_t list_t = 0;   // v16: when the recordings list was last rebuilt
 static int list_seen_count = -1;
 
 static void fmt_mmss(char *o, size_t n, uint32_t s) {
@@ -174,7 +175,7 @@ static void rd_tick() {
 // ---------- recent list ----------
 static void row_cb(lv_event_t *e) { rd_open((int)(intptr_t)lv_event_get_user_data(e)); }
 static void refresh_list() {
-  list_dirty = false;
+  list_dirty = false; list_t = millis();
   if (rec.state != REC_IDLE) return;
   nfiles = rec_list(files, 40);
   lv_obj_clean(r_list);
@@ -309,7 +310,7 @@ static void ru_tick(uint32_t now) {
       if (el > 30000 && st == REC_FINALIZING) rec_force_idle("Save timed out. Restart the puck.");
       break;
     case RU_SAVED: if (el > 2000) ru_set(RU_READY); break;
-    case RU_READY: if (!rd && (list_dirty || rec.count != list_seen_count)) refresh_list(); break;
+    case RU_READY: if (!rd && ui_settled && (list_dirty || rec.count != list_seen_count)) refresh_list(); break;   // v16: never mid-swipe
   }
   rd_tick();
 }

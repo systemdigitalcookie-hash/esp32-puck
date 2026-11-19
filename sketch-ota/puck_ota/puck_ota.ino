@@ -38,6 +38,7 @@ static lv_obj_t *tv, *dots[5], *lbl_clock, *lbl_date, *lbl_tsrc;
 #define PG_STATUS 4
 // one place decides whether pages can be swiped (recording, talking to Tauke, playing the game lock it)
 static bool lock_rec = false, lock_tk = false, lock_game = false;
+static bool ui_settled = true;   // v16: tileview at rest (not mid-swipe); slow SD/I2C work waits for this
 static void nav_apply() {
   if (lock_rec || lock_tk || lock_game) lv_obj_clear_flag(tv, LV_OBJ_FLAG_SCROLLABLE);
   else lv_obj_add_flag(tv, LV_OBJ_FLAG_SCROLLABLE);
@@ -123,7 +124,7 @@ static void time_tick() {
     strftime(tb, sizeof tb, "%H:%M", &t); strftime(db, sizeof db, "%a, %d %b %Y", &t);
     snprintf(sb, sizeof sb, "Kuala Lumpur");
   } else { strcpy(tb, "--:--"); strcpy(db, ""); strcpy(sb, "Needs Wi-Fi once"); }
-  lv_label_set_text(lbl_clock, tb); lv_label_set_text(lbl_date, db); lv_label_set_text(lbl_tsrc, sb);
+  ui_set_text(lbl_clock, tb); ui_set_text(lbl_date, db); ui_set_text(lbl_tsrc, sb);   // v16: no redraw when unchanged
 }
 
 // ================= BQ27220 battery gauge (@0x55) =================
@@ -214,6 +215,8 @@ void loop() {
   uint32_t now = millis();
   int sx = lv_obj_get_scroll_x(tv);
   bool settled = sx % 360 == 0;
+  ui_settled = settled;
+  static bool want_slow = false;
   if (now - last_tk >= 33) {   // ~30 Hz: Tauke face, recorder state machine, settings sub-screens
     last_tk = now;
     tk_tick(last_page == PG_TAUKE || sx / 360 == PG_TAUKE || (sx + 359) / 360 == PG_TAUKE);
@@ -229,15 +232,15 @@ void loop() {
     static int dots_page = -1;   // v15: restyle dots only when the page changes (was 5 invalidations every 100 ms)
     if (page != dots_page) { dots_page = page; for (int i = 0; i < NPAGES; i++) lv_obj_set_style_bg_color(dots[i], lv_color_hex(i == page ? C_TEXT : C_LINE), 0); }
     if (page != last_page) {
-      last_page = page; last_slow = 0;
-      if (page == 0) list_dirty = true;
+      last_page = page; want_slow = true;   // v16: page work runs once the swipe settles, not mid-swipe
+      if (page == 0 && millis() - list_t > 300000) list_dirty = true;   // only re-read the SD folder if the list is stale
       if (page != 0 && rd) rd_close();
     }
   }
-  if (now - last_slow >= 1000) {   // 1 Hz: clock, status page
+  if (now - last_slow >= 1000 || (want_slow && settled)) {   // 1 Hz: clock, status page
     last_slow = now;
     time_tick();
-    if (last_page == PG_STATUS) settings_summaries();
+    if (settled) { want_slow = false; if (last_page == PG_STATUS) settings_summaries(); }
     sub_refresh();
   }
   Lvgl_Loop();

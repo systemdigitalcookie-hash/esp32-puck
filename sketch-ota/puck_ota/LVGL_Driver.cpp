@@ -8,8 +8,10 @@
 
 static lv_disp_draw_buf_t draw_buf;
 volatile uint32_t lv_flush_cnt = 0, lv_flush_px = 0, lv_flush_us = 0;
-static lv_color_t buf1[ LVGL_BUF_LEN ];
-static lv_color_t buf2[ LVGL_BUF_LEN];
+// v16: word-aligned internal RAM so the SPI driver DMAs straight from them (no bounce copy); one strip = one transaction
+static lv_color_t buf1[ LVGL_BUF_LEN ] __attribute__((aligned(4)));
+static lv_color_t buf2[ LVGL_BUF_LEN] __attribute__((aligned(4)));
+static_assert(LVGL_BUF_LEN * sizeof(lv_color_t) <= ESP_PANEL_HOST_SPI_MAX_TRANSFER_SIZE, "strip must fit one SPI transaction");
 // static lv_color_t* buf1 = (lv_color_t*) heap_caps_malloc(LVGL_BUF_LEN , MALLOC_CAP_SPIRAM);
 // static lv_color_t* buf2 = (lv_color_t*) heap_caps_malloc(LVGL_BUF_LEN , MALLOC_CAP_SPIRAM);
     

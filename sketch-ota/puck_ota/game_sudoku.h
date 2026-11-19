@@ -109,7 +109,9 @@ static bool sdk_has_save() {
   if (p.begin("games", true)) { ok = p.getBytesLength("sdk_s") == sizeof(SdkSave); p.end(); }
   return ok;
 }
+static bool sdk_dirty = false; static uint32_t sdk_dirty_t = 0;   // v16: debounced save after a move
 static void sdk_save() {
+  sdk_dirty = false;
   if (!sdk_playing) return;
   SdkSave s; s.magic = 0x5344; s.secs = sdk_secs; s.diff = sdk_diff;
   memcpy(s.giv, sdk_giv, 81); memcpy(s.sol, sdk_sol, 81); memcpy(s.val, sdk_val, 81);
@@ -185,7 +187,7 @@ static void sdk_set(int v) {
   if (!sdk_playing || sdk_sel < 0 || sdk_giv[sdk_sel]) return;
   sdk_val[sdk_sel] = v; sdk_paint();
   if (v) { bool ok = true; for (int i = 0; i < 81; i++) if (sdk_val[i] != sdk_sol[i]) { ok = false; break; } if (ok) { sdk_win(); return; } }
-  sdk_save();
+  sdk_dirty = true; sdk_dirty_t = millis();   // v16: saved ~2 s later by the 1 s timer (and always on Back/close), not on every tap
 }
 static void sdk_pad_cb(lv_event_t *e) { sdk_set((int)(intptr_t)lv_event_get_user_data(e)); }
 static void sdk_play_back_cb(lv_event_t *e) {
@@ -196,7 +198,7 @@ static void sdk_exit_btn_cb(lv_event_t *e) { void (*cb)(void) = sdk_exit_cb; if 
 static void sdk_timer_cb(lv_timer_t *) {
   if (!sdk_playing) return;
   sdk_secs++; sdk_hdr_update();
-  if (sdk_secs % 20 == 0) sdk_save();
+  if (sdk_secs % 20 == 0 || (sdk_dirty && millis() - sdk_dirty_t >= 2000)) sdk_save();
 }
 bool sudoku_running(void) { return sudoku_root && sdk_playing; }
 void sudoku_close(void) {

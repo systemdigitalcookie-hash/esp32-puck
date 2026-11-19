@@ -113,9 +113,7 @@ static void gh_build(lv_obj_t *t) {
 }
 // every loop; closes a running game when the page is left
 static void gh_tick(bool visible) {
-  static bool was = false;
   gh_stress_step();
   if (gh_cur >= 0 && !visible) gh_teardown();
-  if (visible && !was) gh_refresh();
-  was = visible;
+  // v16: best scores are cached in the row labels (read at boot + after every game closes); no NVS reads mid-swipe
 }

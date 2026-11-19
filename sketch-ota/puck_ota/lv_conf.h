@@ -71,7 +71,7 @@
 #define LV_MEM_BUF_MAX_NUM 16
 
 /*Use the standard `memcpy` and `memset` instead of LVGL's own functions. (Might or might not be faster).*/
-#define LV_MEMCPY_MEMSET_STD 0
+#define LV_MEMCPY_MEMSET_STD 1   /* v16: libc memcpy/memset (ROM-optimised) */
 
 /*====================
    HAL SETTINGS
@@ -343,7 +343,8 @@
 #define LV_ATTRIBUTE_LARGE_RAM_ARRAY
 
 /*Place performance critical functions into a faster memory (e.g RAM)*/
-#define LV_ATTRIBUTE_FAST_MEM
+#include "esp_attr.h"
+#define LV_ATTRIBUTE_FAST_MEM IRAM_ATTR   /* v16: hot LVGL draw/blend code in IRAM */
 
 /*Prefix variables that are used in GPU accelerated operations, often these need to be placed in RAM sections that are DMA accessible*/
 #define LV_ATTRIBUTE_DMA

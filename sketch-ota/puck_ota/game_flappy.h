@@ -12,7 +12,7 @@
 enum { FLAPPY_IDLE = 0, FLAPPY_PLAY, FLAPPY_OVER };
 struct FlappyPipe { lv_obj_t *c, *t, *tc, *b, *bc; float x; int gy, gap; bool passed; };
 static lv_obj_t *flappy_root = NULL, *flappy_bird, *flappy_hud, *flappy_idle, *flappy_card, *flappy_cs, *flappy_cb, *flappy_cn;
-static lv_obj_t *flappy_stripe[16];
+static lv_obj_t *flappy_strip;   // v16: one row holding the 16 ground stripes; only the row moves
 static FlappyPipe flappy_pipe[FLAPPY_NP];
 static lv_timer_t *flappy_tm = NULL;
 static void (*flappy_exit_cb)(void) = NULL;
@@ -87,7 +87,7 @@ static void flappy_step(float k) {
   lv_obj_set_y(flappy_bird, (int)flappy_y);
   float sp = flappy_spd * k;
   flappy_gx += sp; if (flappy_gx >= 24) flappy_gx -= 24;
-  for (int i = 0; i < 16; i++) lv_obj_set_x(flappy_stripe[i], i * 24 - (int)flappy_gx);
+  lv_obj_set_x(flappy_strip, -(int)flappy_gx);
   const int bx0 = FLAPPY_BX + 3, bx1 = FLAPPY_BX + 28, by0 = (int)flappy_y + 3, by1 = (int)flappy_y + 22;
   bool hit = by1 >= FLAPPY_GY;
   float far = 0;
@@ -156,7 +156,8 @@ inline void flappy_open(lv_obj_t *parent, void (*on_exit)(void)) {
   // ground
   flappy_rect(r, 0, FLAPPY_GY, 360, 60, 0xDED895, 2, 0x4A3410);
   flappy_rect(r, 0, FLAPPY_GY, 360, 10, 0x6CC03A);
-  for (int i = 0; i < 16; i++) { flappy_stripe[i] = flappy_rect(r, i * 24, FLAPPY_GY + 10, 12, 6, 0x5AA52E); }
+  flappy_strip = flappy_rect(r, 0, FLAPPY_GY + 10, 17 * 24, 6, 0, 0); lv_obj_set_style_bg_opa(flappy_strip, LV_OPA_TRANSP, 0);
+  for (int i = 0; i < 17; i++) flappy_rect(flappy_strip, i * 24, 0, 12, 6, 0x5AA52E);
   flappy_bird = flappy_make_bird(r);
   flappy_hud = ui_label(r, &lv_font_montserrat_48, 0xFFFFFF, 0, "0");
   lv_obj_align(flappy_hud, LV_ALIGN_TOP_MID, 0, 24); lv_obj_clear_flag(flappy_hud, LV_OBJ_FLAG_CLICKABLE);
@@ -189,5 +190,5 @@ inline void flappy_open(lv_obj_t *parent, void (*on_exit)(void)) {
   flappy_reset();
   flappy_set_state(FLAPPY_IDLE);
   flappy_want_exit = false;
-  flappy_tm = lv_timer_create(flappy_timer_cb, 33, NULL);
+  flappy_tm = lv_timer_create(flappy_timer_cb, 20, NULL);   // v16: 50 fps (was 33 ms); physics is dt-scaled so speed is unchanged
 }

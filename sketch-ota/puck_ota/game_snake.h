@@ -107,6 +107,7 @@ static void snake_show(int st) {
   else lv_obj_clear_flag(snake_p_play, LV_OBJ_FLAG_HIDDEN);
   if (snake_pause_l) { if (st == SNAKE_PAUSE) lv_obj_clear_flag(snake_pause_l, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(snake_pause_l, LV_OBJ_FLAG_HIDDEN); }
 }
+static uint32_t snake_iv() { int iv = 200 - 6 * snake_score; return iv < 85 ? 85 : iv; }
 static void snake_start() {
   snake_len = 3; snake_score = 0; snake_dx = 1; snake_dy = 0; snake_ndx = 1; snake_ndy = 0;
   for (int i = 0; i < 3; i++) { snake_x[i] = 10 - i; snake_y[i] = 10; }
@@ -116,6 +117,7 @@ static void snake_start() {
   lv_label_set_text(snake_score_l, "0");
   snake_last = lv_tick_get(); snake_moved = false;
   snake_show(SNAKE_PLAY); snake_draw();
+  if (snake_tm) { lv_timer_set_period(snake_tm, snake_iv()); lv_timer_reset(snake_tm); }   // first move one interval after start
 }
 static void snake_end() {
   bool nb = snake_score > snake_best;
@@ -156,8 +158,8 @@ static void snake_tick(lv_timer_t *) {
       }
     }
   }
-  int iv = 200 - 6 * snake_score; if (iv < 85) iv = 85;
-  if (lv_tick_elaps(snake_last) >= (uint32_t)iv) { snake_last = lv_tick_get(); snake_step(); }
+  snake_last = lv_tick_get(); snake_step();
+  if (snake_tm) lv_timer_set_period(snake_tm, snake_iv());   // v16: the timer period IS the move interval (no 20 ms polling jitter)
 }
 static void snake_touch_cb(lv_event_t *e) {
   if (snake_state != SNAKE_PLAY && snake_state != SNAKE_PAUSE) return;
@@ -262,5 +264,5 @@ void snake_open(lv_obj_t *parent, void (*on_exit)(void)) {
   lv_obj_t *ob = snake_btn(snake_p_over, 130, 36, "Back", 1); lv_obj_align(ob, LV_ALIGN_TOP_MID, 0, 250);
 
   snake_show(SNAKE_IDLE);
-  snake_tm = lv_timer_create(snake_tick, 20, NULL);
+  snake_tm = lv_timer_create(snake_tick, 200, NULL);
 }
