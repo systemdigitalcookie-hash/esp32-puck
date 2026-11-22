@@ -146,6 +146,19 @@ static void battery_text(char *out, size_t n) {
 
 #include "settings_ui.h"
 #include "games_hub.h"
+#include "screen_btn.h"
+
+// v18 screen button (BOOT): long press = close whatever is open and go to the Clock page
+static void btn_before_off() { if (tk_state == TK_LISTEN) tk_send(); }   // finger can't lift while dark: send what was said
+static void btn_home() {
+  if (gh_cur >= 0) gh_teardown();                    // game (Sudoku saves on close)
+  if (rd) rd_close();                                // recording detail (stops playback)
+  sub_close();                                       // Settings sub-screen, Wi-Fi picker/keyboard, mic test
+  if (tk_state == TK_THINK) { tk_cancel = true; tk_set_caption("Cancelled", C_GREY); tk_go(TK_IDLE); }
+  else if (tk_state == TK_SPEAK) talk_play_stop();
+  if (ru == RU_ERROR) ru_set(RU_READY);
+  if (!lock_rec && !lock_tk) lv_obj_set_tile_id(tv, 2, 0, LV_ANIM_OFF);   // a running recording keeps its page
+}
 
 static void build_ui() {
   ui_styles_init();
@@ -205,6 +218,7 @@ void setup() {
   ensure_tz();
   time_t e; if (rtc_read_epoch(&e)) { struct timeval tvv = { e, 0 }; settimeofday(&tvv, NULL); time_src = "from RTC (offline)"; }
   rec_init();
+  sb_init();
   xTaskCreate(net_task, "net", 12288, NULL, 1, NULL);
 }
 
@@ -212,6 +226,7 @@ void loop() {
   static char shown_net[96];
   static int last_page = -1;
   static uint32_t last_ui = 0, last_slow = 0, last_tk = 0;
+  sb_poll();   // v18 screen button
   uint32_t now = millis();
   int sx = lv_obj_get_scroll_x(tv);
   bool settled = sx % 360 == 0;
@@ -243,7 +258,7 @@ void loop() {
     if (settled) { want_slow = false; if (last_page == PG_STATUS) settings_summaries(); }
     sub_refresh();
   }
-  Lvgl_Loop();
+  if (!sb_off) Lvgl_Loop();   // v18: screen off -> no LVGL redraw and no touch reads
   {  // v13: log LVGL flush rate while a game is open (flushes/s, px/flush, avg flush ms)
     static uint32_t fps_t = 0, fc0 = 0, fp0 = 0, fu0 = 0;
     if (gh_cur >= 0 && now - fps_t >= 2000) {
@@ -252,5 +267,5 @@ void loop() {
       fc0 = lv_flush_cnt; fp0 = lv_flush_px; fu0 = lv_flush_us; fps_t = now;
     } else if (gh_cur < 0) fps_t = now;
   }
-  vTaskDelay(pdMS_TO_TICKS(gh_cur >= 0 ? 1 : 5));
+  vTaskDelay(pdMS_TO_TICKS(sb_off ? 10 : (gh_cur >= 0 ? 1 : 5)));
 }
